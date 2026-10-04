@@ -434,7 +434,7 @@ Judge statistics always appear. Their denominator excludes judge errors and draf
 | `display_name` | Owner's display name. |
 | `run_id` | Run date and numeric sequence. |
 | `persona_version` | Version saved in the run, independent of current version. |
-| `heldout` | Drafted case counts: `n`, `knowledge`, `judgment`. |
+| `heldout` | Held-out case counts from `cases.jsonl`, drafted or not: `n`, `knowledge`, `judgment`. |
 | `knowledge` | Judge statistics: `n`, `send_as_is`, `send_as_is_rate`, `wrong_uncited`. |
 | `judgment` | Same judge statistics for the judgment layer. |
 | `overall_rate` | Total judge send-as-is divided by valid judgments; `null` when empty. |
@@ -448,6 +448,8 @@ Judge statistics always appear. Their denominator excludes judge errors and draf
 | `launch_bar` | `met`, `not_met`, or `sample_too_small`. |
 | `judge_errors` | Number of judge-error rows, excluded from rates. |
 | `unjudged` | Drafted cases with no judgment row. |
+| `undrafted` | Held-out cases with no draft. |
+| `complete` | `true` only when every held-out case has a draft and a judgment row (judge errors count) and the run has no `limit`. Otherwise `launch_bar` is `sample_too_small`. |
 
 ### Example: `report.json`
 
@@ -498,7 +500,9 @@ Judge statistics always appear. Their denominator excludes judge errors and draf
   "bar_n": 0,
   "launch_bar": "sample_too_small",
   "judge_errors": 0,
-  "unjudged": 0
+  "unjudged": 0,
+  "undrafted": 0,
+  "complete": true
 }
 ```
 
@@ -517,7 +521,7 @@ launch bar basis: Sora Aoki's ratings (0 rated)
 
 The Markdown layout has seven required lines: persona/version/date, drafted counts, knowledge judge rate and wrong uncited facts, judgment judge rate, overall judge rate and bar status, calibration agreement and trust, then drafter and judge hosts and models. Percentages use `Math.round(100 * rate)`; empty rates print `n/a`. Only per-layer rates have deltas, formatted `(+8)`, `(-3)`, or `(+0)`. Models are distinct recorded values joined by `, `; `null` or an empty list prints `default`.
 
-After those lines, show only applicable lines in this order: `judge errors: <n> (excluded from rates)` when nonzero, `not judged: <n>` when nonzero, and `launch bar basis: <display_name>'s ratings (<n> rated)` whenever the basis is owner ratings. The file ends with one newline.
+After those lines, show only applicable lines in this order: `judge errors: <n> (excluded from rates)` when nonzero, `not judged: <n>` when nonzero, `not drafted: <n>` when nonzero, `incomplete: <done> of <n> held-out cases drafted and judged — no launch-bar claim` when `complete` is false, and `launch bar basis: <display_name>'s ratings (<n> rated)` whenever the basis is owner ratings. The file ends with one newline.
 
 
 ## Calibration queue item: `queue.jsonl`

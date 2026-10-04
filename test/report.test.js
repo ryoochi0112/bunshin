@@ -41,6 +41,7 @@ function fixture(t) {
 function save(dir, data) {
   const base = `evals/${data.run.run_id}`;
   store.writeJson(dir, `${base}/run.json`, data.run);
+  store.writeJsonl(dir, 'cases.jsonl', data.cases);
   store.writeJsonl(dir, `${base}/drafts.jsonl`, data.drafts);
   store.writeJsonl(dir, `${base}/judgments.jsonl`, data.judgments);
 }
@@ -128,7 +129,7 @@ test('errors, unjudged cases, models, null rates and rounded deltas render exact
   assert.match(text, /knowledge: send as-is 100% \(\+0\)/);
   assert.match(text, /judgment:  send as-is n\/a\n/);
   assert.match(text, /drafter: fake draft-model, default · judge: fake judge-model, default/);
-  assert.ok(text.endsWith("judge errors: 1 (excluded from rates)\nnot judged: 1\nlaunch bar basis: Sora Aoki's ratings (0 rated)\n"));
+  assert.ok(text.endsWith("judge errors: 1 (excluded from rates)\nnot judged: 1\nincomplete: 2 of 3 held-out cases drafted and judged — no launch-bar claim\nlaunch bar basis: Sora Aoki's ratings (0 rated)\n"));
   data.judgments[0].rating = 'wrong';
   data.previous.knowledge.send_as_is_rate = 0.034;
   assert.match(report.renderMarkdown(report.build(data)), /0% \(-3\)/);
@@ -273,4 +274,77 @@ test('report CLI wires calibration, latest owner ratings and persona agreement t
   assert.equal(value.bar_n, 30);
   assert.equal(value.launch_bar, 'met');
   const result = spawned(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, untrusted.stdout);
+});
+
+function limited(n, drafted, mutate = () => {}) {
+  const data = input(Math.ceil(n / 2), Math.floor(n / 2), 0, 0);
+  data.cases = data.drafts.map((draft) => ({ id: draft.case_id, layer: draft.layer }));
+  data.drafts = data.drafts.slice(0, drafted);
+  data.judgments = data.judgments.slice(0, drafted).map((row) => ({ ...row, rating: 'send_as_is' }));
+  mutate(data);
+  return data;
+}
+
+test('limited run never claims the launch bar and counts held-out from cases', () => {
+  const data = input(50, 50, 50, 50);
+  data.drafts = [...data.drafts.slice(0, 20), ...data.drafts.slice(50, 70)];
+  data.judgments = data.drafts.map((draft) => data.judgments.find((row) => row.case_id === draft.case_id));
+  data.run.limit = 40;
+  const value = report.build(data);
+  assert.equal(value.heldout.n, 100);
+  assert.deepEqual([value.heldout.knowledge, value.heldout.judgment], [50, 50]);
+  assert.equal(value.undrafted, 60);
+  assert.equal(value.launch_bar, 'sample_too_small');
+  assert.equal(value.complete, false);
+  const text = report.renderMarkdown(value);
+  assert.match(text, /held-out: 100 pairs \(knowledge 50, judgment 50\)/);
+  assert.match(text, /not drafted: 60\n/);
+  assert.match(text, /incomplete: 40 of 100 held-out cases drafted and judged — no launch-bar claim\n/);
+});
+
+test('each completeness clause independently blocks the launch bar', () => {
+  const full = limited(60, 60);
+  assert.equal(report.build(full).launch_bar, 'met');
+  assert.equal(report.build(full).complete, true);
+  // undrafted only
+  const undrafted = limited(60, 59, (data) => { data.judgments = data.judgments.slice(0, 59); });
+  undrafted.calibration = { match: 30, rated: 30 };
+  assert.equal(report.build(undrafted).launch_bar, 'sample_too_small');
+  assert.equal(report.build(undrafted).unjudged, 0);
+  // unjudged only (drafted, not judged)
+  const unjudged = limited(60, 60, (data) => { data.judgments.pop(); });
+  assert.equal(report.build(unjudged).undrafted, 0);
+  assert.equal(report.build(unjudged).unjudged, 1);
+  assert.equal(report.build(unjudged).launch_bar, 'sample_too_small');
+  // judge_error row counts as judged for coverage
+  const errored = limited(60, 60, (data) => { data.judgments[0] = { case_id: data.drafts[0].case_id, rating: 'judge_error', reason: 'x', judge: run.judge, at: run.started_at }; });
+  assert.equal(report.build(errored).complete, true);
+  // limit set while numerically covering every case
+  const withLimit = limited(60, 60, (data) => { data.run.limit = 60; });
+  assert.equal(report.build(withLimit).launch_bar, 'sample_too_small');
+  assert.match(report.renderMarkdown(report.build(withLimit)), /incomplete: 60 of 60 held-out/);
+});
+
+test('interrupted run with null limit reports not drafted and incomplete', () => {
+  const value = report.build(limited(100, 40));
+  assert.equal(value.run_id, run.run_id);
+  assert.equal(value.heldout.n, 100);
+  assert.equal(value.undrafted, 60);
+  assert.equal(value.launch_bar, 'sample_too_small');
+  const text = report.renderMarkdown(value);
+  assert.match(text, /not drafted: 60\n/);
+  assert.match(text, /incomplete: 40 of 100 held-out cases drafted and judged — no launch-bar claim\n/);
+  assert.doesNotMatch(text, /not judged/);
+});
+
+test('spawned eval report on a saved partial run prints incomplete and sample too small', (t) => {
+  const { home, dir } = fixture(t);
+  save(dir, limited(100, 40));
+  const env = { ...process.env, BUNSHIN_HOME: home }; delete env.BUNSHIN_PERSONA;
+  const result = spawnSync(process.execPath, [path.join(root, 'bin', 'bunshin.js'), 'eval', 'report'], { cwd: root, env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /held-out: 100 pairs/);
+  assert.match(result.stdout, /→ sample too small/);
+  assert.match(result.stdout, /incomplete: 40 of 100 held-out cases drafted and judged — no launch-bar claim/);
+  assert.equal(store.readJson(dir, `evals/${run.run_id}/report.json`).launch_bar, 'sample_too_small');
 });

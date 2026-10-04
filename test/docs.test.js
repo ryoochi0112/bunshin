@@ -166,7 +166,7 @@ test('eval format examples match persisted records, judge parser, and report bui
   assert.equal(case_id, draft.case_id);
   assert.equal(draft.skill, require('../lib/twin').skillForLayer(draft.layer));
   const value = report.build({
-    persona: store.readJson(sampleDir, 'persona.json'), cases: store.readJsonl(sampleDir, 'cases.jsonl'),
+    persona: store.readJson(sampleDir, 'persona.json'), cases: store.readJsonl(sampleDir, 'cases.jsonl').filter((row) => row.id === draft.case_id),
     drafts: [draft], judgments: [judgment], ratings: [], calibration: null, previous: null,
     run: { run_id: '2026-10-20-01', persona_version: 1, drafter: { host: 'fake', model: null }, judge: { host: 'fake', model: null } },
   });
