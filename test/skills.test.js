@@ -130,10 +130,11 @@ test('every skill and Markdown template passes the safety lint', () => {
   assert.deepEqual(findings, []);
 });
 
-test('all seven skills are user-invocable and follow the M2 engine conventions', () => {
-  for (const name of [...operatorSkills, 'spec-answer', 'idea-discussion', 'shadow']) {
+test('all ten skills are user-invocable and follow the M2 engine conventions', () => {
+  for (const name of [...operatorSkills, 'spec-answer', 'idea-discussion', 'shadow', 'eval', 'calibrate', 'export']) {
     const text = skill(name);
     assert.match(text, new RegExp(`^name: ${name}$`, 'm'));
+    assert.match(text, /^description: \S.*$/m);
     assert.match(text, /^user-invocable: true$/m);
     const roots = text.match(/For engine commands, the plugin root is `\$\{CLAUDE_PLUGIN_ROOT\}`, or two directories above this file\./g);
     assert.equal(roots && roots.length, 1, `${name}: plugin root stated once`);
@@ -144,6 +145,100 @@ test('all seven skills are user-invocable and follow the M2 engine conventions',
     assert.match(text, /never post or send anything/i);
     assert.doesNotMatch(text, /(?:read|open|load|cat).*\bevals\//i);
   }
+});
+
+function pinCommand(text, command, label) {
+  const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^[ \\t]*${escaped}[ \\t]*$`, 'gm');
+  const matches = (value) => [...value.matchAll(new RegExp(pattern.source, pattern.flags))];
+  const found = matches(text);
+  assert.equal(found.length, 1, `${label}: exact command line appears once`);
+  assert.equal(matches(text.replace(found[0][0], `leading-junk ${found[0][0]}`)).length, 0,
+    `${label}: reject leading junk`);
+  assert.equal(matches(text.replace(found[0][0], `${found[0][0]} trailing-junk`)).length, 0,
+    `${label}: reject trailing junk`);
+  return found[0].index;
+}
+
+function pinClauses(text, name, clauses) {
+  for (const [label, pattern] of clauses) {
+    assert.match(text, pattern, `${name}: ${label}`);
+    assert.doesNotMatch(text.replace(pattern, ''), pattern, `${name}: removing ${label} must fail`);
+  }
+}
+
+test('eval pins run options, host-error resume, report wording and the printed status', () => {
+  const text = skill('eval');
+  const run = 'node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" eval run';
+  const resume = `${run} --run <run_id>`;
+  const report = 'node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" eval report';
+  const positions = [
+    pinCommand(text, run, 'eval run'),
+    pinCommand(text, resume, 'eval run resume'),
+    pinCommand(text, report, 'eval report'),
+  ];
+  assert.ok(positions[0] < positions[1] && positions[1] < positions[2], 'Run precedes resume and separate report.');
+  pinClauses(text, 'eval', [
+    ['fresh run options', /Pass only the user's named `--judge <spec>`, `--drafter <spec>`, and `--limit <n>` options, plus `--persona <dir>` when the selected persona uses that flag\./],
+    ['no fresh run id', /Do not pass `--run` on a fresh run\./],
+    ['host error offer', /If the CLI exits 1 with `rerun with --run <run_id> to resume`, show its error as-is and offer to resume\./],
+    ['resume same flags', /Append the same named options and persona flag from the interrupted invocation\./],
+    ['no silent fresh run', /Never start a new run silently after a host error\./],
+    ['other errors stop', /For any other non-zero exit, show the CLI error as-is and stop\./],
+    ['report as-is', /The successful `eval run` output already includes `report\.md`; present its Markdown as-is without editing or summarizing it\./],
+    ['separate report options', /Append `--run <run_id>` or `--persona <dir>` only when needed\./],
+    ['one-sentence status rule', /After a successful report, use one sentence that repeats only the overall status word shown there—`MET`, `NOT MET`, or `sample too small`; if it says `sample too small`, add that more held-out pairs are needed\./],
+    ['never restate an unshown result', /Never restate a launch-bar result that the report does not show/],
+    ['never calculate rates', /never calculate or infer rates yourself\./],
+    ['judge reasons stay within CLI output', /Do not add or paraphrase judge reasons beyond what the CLI output shows\./],
+  ]);
+});
+
+test('calibrate pins sampling, owner-only ratings, the blinded loop and final score order', () => {
+  const text = skill('calibrate');
+  const base = 'node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" calibrate ';
+  const positions = [
+    pinCommand(text, `${base}sample`, 'calibrate sample'),
+    pinCommand(text, `${base}next --run <run_id>`, 'calibrate next'),
+    pinCommand(text, `${base}rate <case_id> <rating> --run <run_id>`, 'calibrate rate'),
+    pinCommand(text, `${base}score --run <run_id>`, 'calibrate score'),
+  ];
+  assert.ok(positions[0] < positions[1] && positions[1] < positions[2] && positions[2] < positions[3],
+    'Sampling precedes next, rate, and the final score.');
+  pinClauses(text, 'calibrate', [
+    ['sample options', /Append `--run <run_id>` and\/or `--n <n>` only when the user named them\./],
+    ['zero queue guards', /If the output says `queued 0 items` or `queue exists for <run_id> \(0 items\)`, stop and tell the owner to finish an eval run that produces valid judgments before sampling again\./],
+    ['loop completion', /Repeat the following until `calibrate next` prints `all <k> items rated — run calibrate score`/],
+    ['show one printed item', /Show the CLI item output as printed, one item at a time/],
+    ['exact owner options', /^\s*`A\) send as-is  B\) needs edits  C\) wrong`\s*$/m],
+    ['owner choice mapping', /Map the owner's choice A\/B\/C to `send_as_is`\/`needs_edits`\/`wrong`\./],
+    ['knowledge wrong follow-up', /For a knowledge item rated C, also ask exactly `Did the draft state a wrong fact without a citation\? A\) yes  B\) no`/],
+    ['wrong uncited flag', /map the answer to `--wrong-uncited-fact yes` or `--wrong-uncited-fact no`\./],
+    ['record only owner choice', /Record only the owner's choice/],
+    ['wrong flag placement', /For a knowledge item rated `wrong`, put `--wrong-uncited-fact yes\|no` after `<rating>`\./],
+    ['owner may stop and resume', /If the owner stops, stop without rating the current item\./],
+    ['errors stop', /On any non-zero exit, show the CLI error as-is and stop\./],
+    ['score line as-is', /print the score line as-is\./],
+    ['never read judgments', /Never read `judgments\.jsonl`\./],
+    ['never reveal judge rating', /Never reveal or guess the judge's rating/],
+    ['never suggest a rating', /never suggest a rating/],
+    ['judge reasons stay within CLI output', /never add or paraphrase judge reasons beyond what the CLI output shows\./],
+  ]);
+});
+
+test('export pins the CLI, package path and both load instructions without installing', () => {
+  const text = skill('export');
+  pinCommand(text, 'node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" export', 'export');
+  pinClauses(text, 'export', [
+    ['out option forwarding', /Append `--out <dir>` only when the user named it\./],
+    ['persona option forwarding', /Append `--persona <dir>` when the selected persona uses that flag\./],
+    ['CLI error as-is', /On any non-zero exit, show the CLI error as-is and stop\./],
+    ['package path from plugin manifest', /The package path is the directory two levels above that file; print that path\./],
+    ['plugin-dir load command', /`claude --plugin-dir <path>`/],
+    ['copy skills load instruction', /copy `<path>\/skills\/\*` into `~\/\.claude\/skills\/`/],
+    ['no self-install', /The skill does not copy files or install the package itself\./],
+  ]);
+  assert.doesNotMatch(text, /^\s*(?:cp|install|npm install)\b/m, 'Export must not run a copy or install command.');
 });
 
 test('twin skills load the single composed prompt without duplicating behaviour', () => {
