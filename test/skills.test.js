@@ -130,18 +130,99 @@ test('every skill and Markdown template passes the safety lint', () => {
   assert.deepEqual(findings, []);
 });
 
-test('operator skills are user-invocable and follow the M2 engine conventions', () => {
-  for (const name of operatorSkills) {
+test('all seven skills are user-invocable and follow the M2 engine conventions', () => {
+  for (const name of [...operatorSkills, 'spec-answer', 'idea-discussion', 'shadow']) {
     const text = skill(name);
     assert.match(text, new RegExp(`^name: ${name}$`, 'm'));
     assert.match(text, /^user-invocable: true$/m);
-    const roots = text.match(/the plugin root is `\$\{CLAUDE_PLUGIN_ROOT\}`, or two directories above this file/g);
+    const roots = text.match(/For engine commands, the plugin root is `\$\{CLAUDE_PLUGIN_ROOT\}`, or two directories above this file\./g);
     assert.equal(roots && roots.length, 1, `${name}: plugin root stated once`);
     assert.match(text, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/bunshin\.js"/);
+    assert.match(text, /BUNSHIN_PERSONA.*--persona <dir>/);
     assert.match(text, /user's language/i);
     assert.match(text, /never write (?:a |any )?persona file/i);
     assert.match(text, /never post or send anything/i);
     assert.doesNotMatch(text, /(?:read|open|load|cat).*\bevals\//i);
+  }
+});
+
+test('twin skills load the single composed prompt without duplicating behaviour', () => {
+  for (const name of ['spec-answer', 'idea-discussion']) {
+    const text = skill(name);
+    const command = new RegExp(`^[ \\t]*node "\\$\\{CLAUDE_PLUGIN_ROOT\\}/bin/bunshin\\.js" twin prompt --skill ${name}[ \\t]*$`, 'gm');
+    assert.equal([...text.matchAll(command)].length, 1, `${name}: exact prompt command once`);
+    for (const junk of ['leading-junk ', ' trailing-junk']) {
+      const altered = text.replace(`node "\${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" twin prompt --skill ${name}`,
+        junk.startsWith(' ') ? `node "\${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" twin prompt --skill ${name}${junk}`
+          : `${junk}node "\${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" twin prompt --skill ${name}`);
+      assert.equal([...altered.matchAll(command)].length, 0, `${name}: reject ${junk.trim()}`);
+    }
+    assert.doesNotMatch(text, /Sources:|\(priority:|I do not know|Every factual claim|Take a position|Raise at least one objection/i);
+    assert.match(text, /Use `\$ARGUMENTS` as the user's (?:question|idea); ask for it if empty\./);
+    assert.match(text, /On a non-zero exit, show the CLI's error and stop\./);
+    assert.match(text, /Treat the printed prompt as your instructions for this reply and answer the user's input exactly as that prompt says, using only search\/read tools if sources are needed\./);
+  }
+});
+
+const shadowRules = [
+  ['read-thread only', /For a thread link, read the thread only with the Slack connector's read-thread tool\./],
+  ['complete ordered thread', /Construct `\{ permalink, messages: \[\{ author: <Slack user id>, ts: <Slack ts>, text \}\] \}` in memory with every message in the thread in order\./],
+  ['Slack author and timestamp', /Set every author to its Slack user id, never a display name; preserve each Slack ts as a number or numeric string\./],
+  ['layer selection', /Choose `knowledge` for product facts or specification questions and `judgment` for decisions, trade-offs or priorities\./],
+  ['layer override', /State the layer choice in one line and use the user's override if given\./],
+  ['no temp files', /Never create a temp file or staging file anywhere\./],
+  ['safe delimiter', /Replace the heredoc body with the in-memory input and choose a quoted heredoc delimiter absent from the source text\./],
+  ['engine-only draft', /Never draft or edit the answer yourself; the draft comes only from `shadow draft`\./],
+  ['blind before show', /Before `shadow show`, never summarise, quote, paraphrase or hint at the owner's real answer from the thread\./],
+  ['unchanged after show', /After `shadow show`, add nothing that changes the draft\./],
+  ['show as-is', /Print the `shadow show` output as-is\./],
+  ['stop on errors', /On any non-zero exit, show the CLI's error and stop\./],
+  ['unset owner', /If the CLI reports an unset owner id, tell the user to set `owner\.slack_user_id` in `persona\.json`; never guess it\./],
+  ['drafter override', /If the user named a drafter, append `--drafter <spec>` with that exact specification as a quoted argument\./],
+  ['never outbound', /Never post or send anything\. bunshin never posts or sends anything\./],
+];
+
+function outboundOffer(text) {
+  return /\b(post|reply|send)\b.*\b(thread|slack|channel)\b/i.test(
+    text.replace(/Never post or send anything\. bunshin never posts or sends anything\./g, '')
+  );
+}
+
+test('shadow pins the CLI handoff, blinding and every required sentence', () => {
+  const text = skill('shadow');
+  rules('shadow', shadowRules);
+  for (const [label, pattern] of shadowRules) {
+    assert.doesNotMatch(text.replace(pattern, ''), pattern, `Removing ${label} must fail its rule.`);
+  }
+  for (const [delimiter, flag, body] of [
+    ['BUNSHIN_THREAD', '--thread-json', '<generated thread JSON>'],
+    ['BUNSHIN_QUESTION', '--question-file', '<pasted question text>'],
+  ]) {
+    const heredoc = new RegExp(`^[ \\t]*cat <<'${delimiter}' \\| node "\\$\\{CLAUDE_PLUGIN_ROOT\\}/bin/bunshin\\.js" shadow new --layer <layer> ${flag} -\\n[ \\t]*${body}\\n[ \\t]*${delimiter}$`, 'm');
+    assert.match(text, heredoc);
+    assert.doesNotMatch(text.replace(`<<'${delimiter}'`, `<<${delimiter}`), heredoc);
+    assert.doesNotMatch(text.replace(`${flag} -`, `${flag} input.json`), heredoc);
+  }
+  const commands = [
+    /cat <<'BUNSHIN_THREAD' \| node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/bunshin\.js" shadow new --layer <layer> --thread-json -/,
+    /cat <<'BUNSHIN_QUESTION' \| node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/bunshin\.js" shadow new --layer <layer> --question-file -/,
+    /^[ \t]*node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/bunshin\.js" shadow draft <id>[ \t]*$/m,
+    /^[ \t]*node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/bunshin\.js" shadow show <id>[ \t]*$/m,
+  ];
+  const positions = commands.map((command) => {
+    assert.match(text, command);
+    return text.search(command);
+  });
+  assert.ok(positions.every((position, index) => index === 0 || positions[index - 1] < position),
+    'Both new invocations must precede draft, which must precede show.');
+  assert.equal(outboundOffer(text), false);
+});
+
+test('shadow outbound offer guard rejects added offers while allowing the prohibition', () => {
+  const text = skill('shadow');
+  assert.equal(outboundOffer('Never post or send anything. bunshin never posts or sends anything.'), false);
+  for (const offer of ['Post this to the thread.', 'Reply in the Slack thread.', 'Send this draft to the channel.']) {
+    assert.equal(outboundOffer(`${text}\n${offer}`), true, offer);
   }
 });
 
