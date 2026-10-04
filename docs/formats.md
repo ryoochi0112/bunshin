@@ -425,7 +425,7 @@ After two invalid judge responses, the error row contains only the following fie
 
 `eval report` writes both files under `evals/<run_id>/`, replacing JSON first and Markdown second through atomic writes. Rerunning restores both files after interruption. Without `--run`, it selects the latest date and then numeric sequence. Deltas compare judge rates against the latest earlier run with a report.
 
-Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone. The bar applies `launch_bar.min_heldout`, `min_per_layer`, and `send_as_is`, plus zero knowledge wrong uncited facts. Until calibration is implemented, CLI reports use no owner ratings and no calibration.
+Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone. The bar applies `launch_bar.min_heldout`, `min_per_layer`, and `send_as_is`, plus zero knowledge wrong uncited facts.
 
 | Field | Meaning |
 | --- | --- |
@@ -518,3 +518,41 @@ launch bar basis: Sora Aoki's ratings (0 rated)
 The Markdown layout has seven required lines: persona/version/date, drafted counts, knowledge judge rate and wrong uncited facts, judgment judge rate, overall judge rate and bar status, calibration agreement and trust, then drafter and judge hosts and models. Percentages use `Math.round(100 * rate)`; empty rates print `n/a`. Only per-layer rates have deltas, formatted `(+8)`, `(-3)`, or `(+0)`. Models are distinct recorded values joined by `, `; `null` or an empty list prints `default`.
 
 After those lines, show only applicable lines in this order: `judge errors: <n> (excluded from rates)` when nonzero, `not judged: <n>` when nonzero, and `launch bar basis: <display_name>'s ratings (<n> rated)` whenever the basis is owner ratings. The file ends with one newline.
+
+
+## Calibration queue item: `queue.jsonl`
+
+Each line in `calibration/<run_id>/queue.jsonl` selects a draft with a valid judgment. Sampling defaults to 30 items, alternates knowledge and judgment when possible, and stores one seed for the run. An existing queue is never resampled. `calibrate next` shows the question, draft and reference answer without the judge's result.
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | Format version, `1`. |
+| `run_id` | Eval run date and numeric sequence. |
+| `seed` | Sixteen lowercase hex characters from eight random bytes. |
+| `position` | One-based queue position. |
+| `case_id` | Selected held-out case id. |
+| `layer` | Draft layer: `knowledge` or `judgment`. |
+
+### Example: `queue.jsonl`
+
+```json
+{"format_version":1,"run_id":"2026-10-20-01","seed":"0123456789abcdef","position":1,"case_id":"sample-10","layer":"judgment"}
+```
+
+## Owner rating: `ratings.jsonl`
+
+Each line in `calibration/<run_id>/ratings.jsonl` records an owner rating. Re-rating appends a row; the latest row per case id for this run wins in agreement and reports. Agreement counts only cases with valid judgments, excluding judge errors. Trust uses the same minimum of 30 ratings and the persona's `launch_bar.min_agreement` as the report.
+
+| Field | Meaning |
+| --- | --- |
+| `case_id` | Rated queue case id. |
+| `run_id` | Eval run date and numeric sequence. |
+| `rating` | `send_as_is`, `needs_edits`, or `wrong`. |
+| `wrong_uncited_fact` | Boolean, present only for knowledge drafts rated `wrong`; `--wrong-uncited-fact yes` or `no` is required for these ratings and refused otherwise. |
+| `rated_at` | ISO timestamp when the owner rated the draft. |
+
+### Example: `ratings.jsonl`
+
+```json
+{"case_id":"sample-09","run_id":"2026-10-20-01","rating":"wrong","wrong_uncited_fact":true,"rated_at":"2026-10-20T00:00:00.000Z"}
+```

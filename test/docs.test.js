@@ -13,6 +13,7 @@ const store = require('../lib/store');
 const judge = require('../lib/judge');
 const report = require('../lib/report');
 const evalRun = require('../lib/eval-run');
+const calibrate = require('../lib/calibrate');
 
 const root = path.join(__dirname, '..');
 const sampleDir = path.join(root, 'sample', 'persona');
@@ -93,6 +94,8 @@ function assertValid(result, label) {
 
 test('format tables contain every exported field list', () => {
   const fieldTables = [
+    ['Calibration queue item: `queue.jsonl`', calibrate.QUEUE_FIELDS],
+    ['Owner rating: `ratings.jsonl`', calibrate.RATING_FIELDS],
     ['Pair record: `pairs.jsonl`', pairs.PAIR_FIELDS],
     ['Interview answer: `interview.jsonl`', interview.INTERVIEW_ANSWER_FIELDS],
     ['Interview state: `interview-state.json`', interview.INTERVIEW_STATE_FIELDS],
@@ -116,7 +119,7 @@ test('JSON examples parse, match the fictional sample, and pass their validators
     ['identity.json', store.readJson(sampleDir, 'identity.json'), (value) => identity.validate(sampleDir, value)],
   ];
 
-  assert.equal([...formats.matchAll(/```json\s*\n/g)].length, examples.length + 4);
+  assert.equal([...formats.matchAll(/```json\s*\n/g)].length, examples.length + 6);
   for (const [file, sampleValue, validator] of examples) {
     const value = documentedExample(file);
     assert.deepEqual(value, sampleValue, `${file} example must come from sample/persona`);
@@ -173,4 +176,29 @@ test('eval format examples match persisted records, judge parser, and report bui
   const markdown = formats.match(/### Example: `report.md`\s*```text\n([\s\S]*?)```/);
   assert.ok(markdown);
   assert.equal(markdown[1], report.renderMarkdown(value));
+});
+
+
+test('calibration examples pass readers and match shapes written by the command', (t) => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bunshin-doc-t5-')));
+  fs.cpSync(sampleDir, dir, { recursive: true });
+  t.after(() => { fs.rmSync(dir, { recursive: true, force: true }); store._resetGuardCache(); });
+  const queue = documentedExample('queue.jsonl');
+  const rating = documentedExample('ratings.jsonl');
+  assert.deepEqual(calibrate.validateQueueItem(queue), []);
+  assert.deepEqual(calibrate.validateRating(rating), []);
+  const runId = queue.run_id;
+  store.writeJson(dir, `evals/${runId}/run.json`, { run_id: runId });
+  store.writeJsonl(dir, `evals/${runId}/drafts.jsonl`, [{ case_id: rating.case_id, layer: 'knowledge' }]);
+  store.writeJsonl(dir, `evals/${runId}/judgments.jsonl`, [{ case_id: rating.case_id, rating: 'wrong' }]);
+  const command = require('../lib/commands/calibrate');
+  const io = { stdout: { write() {} }, stderr: { write() {} } };
+  assert.equal(command.run(['sample', '--persona', dir], io), 0);
+  assert.deepEqual(Object.keys(calibrate.readQueue(dir, runId)[0]), Object.keys(queue));
+  assert.equal(command.run(['rate', rating.case_id, 'wrong', '--wrong-uncited-fact', 'yes', '--persona', dir], io), 0);
+  assert.deepEqual(Object.keys(calibrate.readRatings(dir, runId)[0]), Object.keys(rating));
+  store.writeJsonl(dir, `calibration/${runId}/queue.jsonl`, [queue]);
+  store.writeJsonl(dir, `calibration/${runId}/ratings.jsonl`, [rating]);
+  assert.deepEqual(calibrate.readQueue(dir, runId), [queue]);
+  assert.deepEqual(calibrate.readRatings(dir, runId), [rating]);
 });

@@ -237,3 +237,40 @@ test('a failed Markdown write leaves JSON persisted and rerun repairs both in or
   assert.equal(result.code, 0, result.stderr);
   assert.equal(fs.readFileSync(path.join(dir, 'evals', run.run_id, 'report.md'), 'utf8'), result.stdout);
 });
+
+test('report CLI wires calibration, latest owner ratings and persona agreement threshold', async (t) => {
+  const { home, dir } = fixture(t);
+  const data = input(15, 15, 15, 15);
+  data.persona.launch_bar.min_agreement = 0.9;
+  data.persona.launch_bar.min_heldout = 2;
+  data.persona.launch_bar.min_per_layer = 1;
+  store.writeJson(dir, 'persona.json', data.persona);
+  save(dir, data);
+  const spawned = () => {
+    const env = { ...process.env, BUNSHIN_HOME: home }; delete env.BUNSHIN_PERSONA;
+    return spawnSync(process.execPath, [path.join(root, 'bin/bunshin.js'), 'eval', 'report'], { env, encoding: 'utf8' });
+  };
+  const uncalibrated = await cli(['report'], home);
+  assert.equal(uncalibrated.code, 0);
+  assert.match(uncalibrated.stdout, /not calibrated → uncalibrated/);
+  assert.equal(spawned().stdout, uncalibrated.stdout);
+  const rows = data.drafts.map((draft) => ({ case_id: draft.case_id, run_id: run.run_id, rating: 'send_as_is', rated_at: run.started_at }));
+  const file = `calibration/${run.run_id}/ratings.jsonl`;
+  store.writeJsonl(dir, file, rows);
+  const trusted = await cli(['report'], home);
+  assert.equal(trusted.code, 0);
+  assert.match(trusted.stdout, /30\/30 \(100%\) → trusted/);
+  assert.equal(store.readJson(dir, `evals/${run.run_id}/report.json`).basis, 'judge');
+  assert.equal(spawned().stdout, trusted.stdout);
+  // 26/30 would meet the default threshold; this persona requires 90%.
+  store.writeJsonl(dir, file, [...rows, ...rows.slice(0, 4).map((row) => ({ ...row, rating: 'needs_edits' }))]);
+  const untrusted = await cli(['report'], home);
+  assert.equal(untrusted.code, 0);
+  assert.match(untrusted.stdout, /26\/30 \(87%\) → untrusted/);
+  assert.match(untrusted.stdout, /launch bar basis: Sora Aoki's ratings \(30 rated\)/);
+  const value = store.readJson(dir, `evals/${run.run_id}/report.json`);
+  assert.equal(value.basis, 'owner_ratings');
+  assert.equal(value.bar_n, 30);
+  assert.equal(value.launch_bar, 'met');
+  const result = spawned(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, untrusted.stdout);
+});
