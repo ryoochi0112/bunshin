@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "salt": "74696465706f6f6c",
+  "heldout_ratio": 0.3,
+  "assignments": {
+    "sample-01": "build",
+    "sample-02": "build",
+    "sample-03": "build",
+    "sample-04": "build",
+    "sample-05": "build",
+    "sample-06": "build",
+    "sample-07": "build",
+    "sample-08": "build",
+    "sample-09": "build",
+    "sample-10": "heldout",
+    "sample-11": "build",
+    "sample-12": "heldout",
+    "sample-13": "heldout",
+    "sample-14": "build",
+    "sample-15": "build",
+    "sample-16": "build"
+  }
+}

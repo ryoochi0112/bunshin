@@ -1,0 +1,21 @@
+{
+  "format_version": 1,
+  "name": "sample",
+  "display_name": "Sora Aoki",
+  "synthetic": true,
+  "owner": {
+    "slack_user_id": null
+  },
+  "version": 1,
+  "launch_bar": {
+    "send_as_is": 0.5,
+    "min_heldout": 30,
+    "min_per_layer": 10,
+    "min_agreement": 0.8
+  },
+  "hosts": {
+    "claude": {
+      "allowed_tools": []
+    }
+  }
+}

@@ -1,0 +1,2 @@
+{"id":"cf-0001","claim":"A completed review always justifies a broad launch, while observed choices favour a pilot.","interview_ref":"iv-0001","behaviour_refs":["sample-02"],"status":"resolved","resolution":"context","note":"A review is enough for a familiar workflow; unfamiliar workflows still need a limited pilot."}
+{"id":"cf-0002","claim":"Every feature change needs email, while observed choices sometimes favour a small notice in the interface.","interview_ref":"iv-0004","behaviour_refs":["sample-16"],"status":"open","resolution":null,"note":null}

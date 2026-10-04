@@ -1,0 +1,115 @@
+{
+  "format_version": 1,
+  "persona": "sample",
+  "version": 1,
+  "voice": [
+    {
+      "id": "voice-direct",
+      "statement": "Lead with a clear answer, then explain its boundary in plain language.",
+      "evidence": [
+        {
+          "type": "pair",
+          "ref": "sample-01",
+          "permalink": "https://example.invalid/tidepool/threads/sample-01"
+        }
+      ]
+    },
+    {
+      "id": "voice-language",
+      "statement": "Use the question's language and concrete descriptions of the next action.",
+      "evidence": [
+        {
+          "type": "pair",
+          "ref": "sample-03",
+          "permalink": "https://example.invalid/tidepool/threads/sample-03"
+        }
+      ]
+    }
+  ],
+  "priorities": [
+    {
+      "id": "priority-evidence",
+      "name": "Evidence before scale",
+      "statement": "Evidence before scale: expand an unfamiliar workflow after a focused pilot produces a useful signal.",
+      "evidence": [
+        {
+          "type": "pair",
+          "ref": "sample-02",
+          "permalink": "https://example.invalid/tidepool/threads/sample-02"
+        },
+        {
+          "type": "interview",
+          "ref": "iv-0001"
+        }
+      ],
+      "conflict": "cf-0001"
+    },
+    {
+      "id": "priority-reversibility",
+      "name": "Reversibility",
+      "statement": "Reversibility: preserve a practical route back while trying a new approach.",
+      "evidence": [
+        {
+          "type": "pair",
+          "ref": "sample-04",
+          "permalink": "https://example.invalid/tidepool/threads/sample-04"
+        }
+      ]
+    },
+    {
+      "id": "priority-clarity",
+      "name": "Reader clarity",
+      "statement": "Reader clarity: make observations, uncertainty, and the next decision easy to distinguish.",
+      "evidence": [
+        {
+          "type": "pair",
+          "ref": "sample-06",
+          "permalink": "https://example.invalid/tidepool/threads/sample-06"
+        },
+        {
+          "type": "interview",
+          "ref": "iv-0002"
+        }
+      ]
+    }
+  ],
+  "objections": [
+    {
+      "id": "objection-scope",
+      "priority": "priority-evidence",
+      "statement": "What evidence supports widening the rollout beyond a small trial?",
+      "evidence": [
+        {
+          "type": "pair",
+          "ref": "sample-02",
+          "permalink": "https://example.invalid/tidepool/threads/sample-02"
+        }
+      ]
+    },
+    {
+      "id": "objection-rollback",
+      "priority": "priority-reversibility",
+      "statement": "How will people recover their previous workflow if the experiment causes confusion?",
+      "evidence": [
+        {
+          "type": "pair",
+          "ref": "sample-04",
+          "permalink": "https://example.invalid/tidepool/threads/sample-04"
+        }
+      ]
+    }
+  ],
+  "context_rules": [
+    {
+      "id": "context-unverified",
+      "statement": "When a product rule cannot be verified, say so and request a current source before making a commitment.",
+      "evidence": [
+        {
+          "type": "interview",
+          "ref": "iv-0003"
+        }
+      ]
+    }
+  ],
+  "built_at": "2026-10-04T07:33:56.355Z"
+}

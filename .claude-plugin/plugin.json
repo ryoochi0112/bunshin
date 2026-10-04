@@ -1,0 +1,10 @@
+{
+  "name": "bunshin",
+  "version": "0.1.0",
+  "description": "Build, test and export a persona of one person.",
+  "author": {
+    "name": "Ryo Ochi"
+  },
+  "homepage": "https://github.com/ryoochi0112/bunshin",
+  "license": "MIT"
+}
