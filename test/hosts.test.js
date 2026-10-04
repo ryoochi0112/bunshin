@@ -85,9 +85,9 @@ test('host registry parses only supported hosts and keeps the full fixture suffi
   assert.deepEqual(hosts.parseSpec('claude:haiku'), { host: 'claude', model: 'haiku' });
   assert.deepEqual(hosts.parseSpec('fake'), { host: 'fake', model: undefined });
   assert.deepEqual(hosts.parseSpec('fake:./fixtures/replies:one.json'), { host: 'fake', model: './fixtures/replies:one.json' });
-  for (const host of ['claude', 'fake']) assert.equal(typeof hosts.get(host).run, 'function');
-  for (const name of ['codex', 'codex:model', 'unknown', '__proto__', 'constructor']) {
-    assert.throws(() => hosts.parseSpec(name), /Unknown host.*claude or fake.*codex/);
+  for (const host of ['claude', 'codex', 'fake']) assert.equal(typeof hosts.get(host).run, 'function');
+  for (const name of ['unknown', 'unknown:model', '__proto__', 'constructor']) {
+    assert.throws(() => hosts.parseSpec(name), /Unknown host.*claude, codex or fake/);
     assert.throws(() => hosts.get(name), /Unknown host/);
   }
   for (const spec of ['', undefined, null, 'claude:', 'fake:  ']) assert.throws(() => hosts.parseSpec(spec), /Host spec/);
