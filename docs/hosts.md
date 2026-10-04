@@ -74,13 +74,14 @@ reads `hosts.claude.allowed_tools`. A missing value or `[]` uses these defaults
 - `mcp__claude_ai_Notion__notion-search`
 - `mcp__claude_ai_Notion__notion-fetch`
 
-Configured names must be fully qualified `mcp__<server>__<tool>` names without
-wildcards, commas or whitespace. Validation rejects any Slack name, the outbound
-fragments from `test/skills.test.js` (`send_message`, `schedule_message`,
-`send_message_draft`, `add_reaction`, `create_canvas`, `update_canvas`,
-`notion-create`, `notion-update`, `notion-move`, `notion-duplicate`), and `create`,
-`update`, `delete`, `move`, `upload`, `comment` or `send` anywhere in the tool
-part, case-insensitively. The adapter validates `allowedTools` again before
+Configured names must be exactly `mcp__<server>__notion-search` or
+`mcp__<server>__notion-fetch`. The server name contains only letters A–Z or a–z,
+digits, underscores and hyphens, is non-empty, and contains no `__`. It must
+contain `notion` and must not contain `slack`, both checked case-insensitively.
+The tool part is case-sensitive: only `notion-search` and `notion-fetch` pass.
+Null, non-array values, non-string entries and all other tool names are refused.
+This positive allowlist implements contract §6: the drafter has only Notion
+search and fetch tools. The adapter validates `allowedTools` again before
 spawning, including for `tools: "none"`. The latter enables no built-in tools and
 no MCP connectors; no `--allowedTools` argument is passed.
 

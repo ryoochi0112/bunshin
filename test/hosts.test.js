@@ -141,17 +141,23 @@ test('fake host consumes a composed prompt from the CLI using only a temp sample
   assert.deepEqual(reply.raw, { matched: 'preview duration' });
 });
 
-test('persona allowlist defaults and configured read tools are copied without mutation', () => {
+test('persona allowlist defaults and configured Notion search and fetch tools are copied without mutation', () => {
   for (const persona of [undefined, {}, { hosts: {} }, { hosts: { claude: {} } },
     JSON.parse(fs.readFileSync(path.join(root, 'sample', 'persona', 'persona.json'), 'utf8'))]) {
     assert.deepEqual(hosts.allowedTools(persona), defaultTools);
   }
-  const configured = ['mcp__notion__search', 'mcp__notion__fetch'];
-  const result = hosts.allowedTools({ hosts: { claude: { allowed_tools: configured } } });
-  assert.deepEqual(result, configured);
-  assert.notEqual(result, configured);
-  result.push('mcp__notion__read');
-  assert.deepEqual(configured, ['mcp__notion__search', 'mcp__notion__fetch']);
+  for (const configured of [[], defaultTools, ['mcp__notion__notion-search', 'mcp__notion__notion-fetch'],
+    ['mcp__claude_ai_Notion__notion-fetch']]) {
+    const original = [...configured];
+    const result = hosts.allowedTools({ hosts: { claude: { allowed_tools: configured } } });
+    assert.deepEqual(result, configured.length ? configured : defaultTools);
+    assert.notEqual(result, configured);
+    result.push('changed');
+    assert.deepEqual(configured, original);
+    const direct = claude.validateAllowedTools(configured);
+    assert.deepEqual(direct, configured.length ? configured : defaultTools);
+    assert.notEqual(direct, configured);
+  }
   hosts.allowedTools({})[0] = 'changed';
   assert.deepEqual(hosts.allowedTools({}), defaultTools);
 });
@@ -217,28 +223,64 @@ test('Claude child env removes every CLAUDE and MCP_ prefix and forces blocking 
   assertCleaned(stub.calls);
 });
 
-test('Claude validates direct allowlists before spawning and passes configured read tools exactly', async () => {
+test('Claude validates direct allowlists before spawning and passes configured Notion tools exactly', async () => {
   const stub = stubSpawn();
-  const deniedFragments = [
+  const formerDenyListFragments = [
     'send_message', 'schedule_message', 'send_message_draft', 'add_reaction', 'create_canvas', 'update_canvas',
     'notion-create', 'notion-update', 'notion-move', 'notion-duplicate',
     'create', 'update', 'delete', 'move', 'upload', 'comment', 'send',
   ];
-  const invalidLists = [null, 'mcp__notion__read', [null], ['Read'], ['mcp__notion'], ['mcp__notion__*'],
+  const invalidLists = [null, 'mcp__notion__read', {}, 42, true, [null], [undefined], [42], [true], [{}],
+    [new String(defaultTools[0])], ['Read'], ['mcp__notion'], ['mcp__notion__*'],
     ['mcp__notion__read,Read'], ['mcp__notion__read Write'], ['mcp__Slack__search'], ['mcp__notion__slack_search'],
-    ...deniedFragments.map((fragment) => [`mcp__notion__prefix_${fragment.toUpperCase()}_suffix`])];
+    ...[
+      'mcp__claude_ai_Gmail__search_threads',
+      'mcp__claude_ai_Notion__notion-ai-search',
+      'mcp__claude_ai_Notion__notion-get-users',
+      'mcp__claude_ai_Notion__notion-search-extra',
+      'mcp__claude_ai_Notion__Notion-Search',
+      'mcp__claude_ai_Slack__slack_search_public',
+      'mcp__Notion_slack__notion-search',
+      'mcp__Notion_SLaCk__notion-fetch',
+      'mcp__claude_ai__notion-search',
+      'mcp__a__b__notion-search',
+      'mcp__Notion__other__notion-search',
+      'mcp__Notion____notion-search',
+      'mcp__Notion.server__notion-search',
+      'mcp____notion-search',
+      'mcp__notion__search',
+      'mcp__notion__fetch',
+      'Read,mcp__notion__notion-search',
+      'Bash,mcp__notion__notion-search',
+      'Bash mcp__Notion__notion-fetch',
+      'xmcp__Notion__notion-search',
+      'mcp__notion__notion-search,Read',
+      'mcp__notion__notion-search Write',
+      'mcp__notion__notion-search\n',
+      'mcp__notion__notion-fetch\r\n',
+    ].map((name) => [name]),
+    [defaultTools[0], 'mcp__claude_ai_Gmail__search_threads'],
+    ...formerDenyListFragments.map((fragment) => [`mcp__notion__prefix_${fragment.toUpperCase()}_suffix`])];
   for (const allowedTools of invalidLists) {
-    assert.throws(() => hosts.allowedTools({ hosts: { claude: { allowed_tools: allowedTools } } }), /claude host: allowed tools/);
+    const message = Array.isArray(allowedTools)
+      ? 'claude host: allowed tools must name Notion search and fetch tools only'
+      : 'claude host: allowed tools must be an array';
+    assert.throws(() => hosts.allowedTools({ hosts: { claude: { allowed_tools: allowedTools } } }), safeError(message));
     for (const tools of ['notion-read', 'none']) {
-      await assert.rejects(stub.host.run({ ...inputs, allowedTools, tools }), /claude host: allowed tools/);
+      await assert.rejects(stub.host.run({ ...inputs, allowedTools, tools }), safeError(message));
+      assert.equal(stub.calls.length, 0);
     }
   }
   assert.equal(stub.calls.length, 0);
-  const configured = ['mcp__notion__search', 'mcp__notion__fetch'];
-  await stub.host.run({ ...inputs, allowedTools: configured });
-  assert.equal(stub.calls[0].argv[stub.calls[0].argv.indexOf('--allowedTools') + 1], configured.join(','));
-  await stub.host.run({ ...inputs, allowedTools: [] });
-  assert.equal(stub.calls[1].argv[stub.calls[1].argv.indexOf('--allowedTools') + 1], defaultTools.join(','));
+  for (const configured of [undefined, [], defaultTools, ['mcp__notion__notion-search', 'mcp__notion__notion-fetch'],
+    ['mcp__claude_ai_Notion__notion-fetch']]) {
+    await stub.host.run({ ...inputs, allowedTools: configured });
+    const call = stub.calls.at(-1);
+    assert.equal(call.argv[call.argv.indexOf('--allowedTools') + 1],
+      (configured?.length ? configured : defaultTools).join(','));
+    await stub.host.run({ ...inputs, allowedTools: configured, tools: 'none' });
+    assert.equal(stub.calls.at(-1).argv.includes('--allowedTools'), false);
+  }
   assertCleaned(stub.calls);
 });
 
