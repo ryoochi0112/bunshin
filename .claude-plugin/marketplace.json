@@ -1,0 +1,13 @@
+{
+  "name": "bunshin",
+  "owner": {
+    "name": "Ryo Ochi"
+  },
+  "plugins": [
+    {
+      "name": "bunshin",
+      "source": "./",
+      "description": "Build, test and export a persona of one person."
+    }
+  ]
+}
