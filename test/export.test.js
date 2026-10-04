@@ -73,6 +73,8 @@ test('sample export has only the standalone package and exact composer bodies af
     const frontmatter = exported.toString('utf8').match(/^---\nname: ([a-z-]+)\ndescription: [^\n]+\n---\n/);
     assert.ok(frontmatter, 'Each skill needs name and description frontmatter.');
     assert.equal(frontmatter[1], skill);
+    assert.equal((exported.toString().match(/^---\r?$/gm) || []).length, 2, 'Each skill has exactly one frontmatter block.');
+    assert.equal((exported.toString().match(/^(?:name|description):/gm) || []).length, 2);
     assert.deepEqual(exported.subarray(Buffer.byteLength(frontmatter[0])), Buffer.from(twin.composePrompt(dir, skill)));
     assert.match(exported.toString(), /main language of the question/i);
     assert.match(exported.toString(), /never post, send or schedule anything/i);
@@ -87,6 +89,9 @@ test('sample export has only the standalone package and exact composer bodies af
       assert.match(exported.toString(), /\(priority: <name>\)/);
     }
   }
+  const readme = read(out, 'README.md');
+  assert.match(readme, new RegExp(`^# ${manifest.name} twin — persona v${manifest.version}\\n`));
+  assert.doesNotMatch(readme, /^---\r?$|^(?:name|description):/m);
   const texts = result.files.map((file) => fs.readFileSync(file, 'utf8'));
   for (const pair of store.readJsonl(dir, 'pairs.jsonl')) {
     for (const text of [pair.question.text, pair.answer.text, ...pair.context.map((entry) => entry.text)]) {

@@ -21,13 +21,41 @@ function template(name) {
   return fs.readFileSync(path.join(__dirname, '..', 'templates', 'twin', `${name}.md`), 'utf8');
 }
 
+function templateBody(name) {
+  const text = template(name);
+  return text.slice(text.search(/^# /m));
+}
+
+test('composer starts with twin behaviour and omits template frontmatter', (t) => {
+  const dir = fixture(t);
+  for (const skill of ['spec-answer', 'idea-discussion']) {
+    const prompt = twin.composePrompt(dir, skill);
+    assert.match(prompt, /^# Twin behaviour\n/);
+    assert.doesNotMatch(prompt, /^---\r?$/m);
+    assert.doesNotMatch(prompt, /^(?:name|description):/m);
+  }
+});
+
+test('template stripping removes exactly one leading block and keeps body bytes', () => {
+  for (const newline of ['\n', '\r\n']) {
+    const header = ['---', 'name: fictional', 'description: Fictional template.', '---', ''].join(newline);
+    const body = `# Fictional template${newline}架空の説明。  ${newline}---${newline}name: body metadata${newline}---${newline}`;
+    assert.equal(twin.stripTemplateFrontmatter(header + newline + body), body);
+    assert.equal(twin.stripTemplateFrontmatter(header + body), body);
+    assert.equal(twin.stripTemplateFrontmatter(header + header + body), header + body);
+    assert.equal(twin.stripTemplateFrontmatter(body), body);
+    assert.equal(twin.stripTemplateFrontmatter(`---${newline}name: unterminated${newline}`), `---${newline}name: unterminated${newline}`);
+  }
+});
+
 test('composer uses core, exact identity bytes and the selected skill in deterministic order', (t) => {
   const dir = fixture(t);
-  // Preserve Unicode, CRLF and trailing whitespace rather than rendering or trimming.
-  const markdown = fs.readFileSync(path.join(dir, 'identity.md'), 'utf8').replace(/\n/g, '\r\n') + '  \r\n';
+  // Identity frontmatter, Unicode, CRLF and trailing whitespace are all persona bytes.
+  const markdown = '---\r\nname: fictional-identity\r\ndescription: Synthetic identity.\r\n---\r\n\r\n'
+    + fs.readFileSync(path.join(dir, 'identity.md'), 'utf8').replace(/\n/g, '\r\n') + '  \r\n';
   store.writeText(dir, 'identity.md', markdown);
   for (const skill of ['spec-answer', 'idea-discussion']) {
-    const expected = [template('core'), markdown, template(skill)].join('\n\n');
+    const expected = [templateBody('core'), markdown, templateBody(skill)].join('\n\n');
     assert.equal(twin.composePrompt(dir, skill), expected);
     assert.equal(twin.composePrompt(dir, skill), expected);
     assert.ok(Buffer.from(expected).includes(Buffer.from(markdown)));

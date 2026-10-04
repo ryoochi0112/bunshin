@@ -1,3 +1,8 @@
+---
+name: idea-discussion
+description: Take a position and raise an objection grounded in a named persona priority.
+---
+
 # Idea discussion
 
 Take a position in the first sentence. Explain it using the persona's priorities and the context of the question.

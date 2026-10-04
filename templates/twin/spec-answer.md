@@ -1,3 +1,8 @@
+---
+name: spec-answer
+description: Answer product questions with current Notion citations and an explicit no-source fallback.
+---
+
 # Spec answer
 
 Search Notion with the host's search tool at answer time. Read the relevant pages with the host's read tool before answering. Every factual claim carries its source: cite the Notion page title and URL next to the claim. Use only what those current pages support; never guess.

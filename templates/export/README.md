@@ -1,3 +1,8 @@
+---
+name: twin-readme
+description: Loading and usage instructions for an exported private persona plugin.
+---
+
 # {{name}} twin — persona v{{version}}
 
 Load this directory as a plugin in a fresh Claude Code session:
