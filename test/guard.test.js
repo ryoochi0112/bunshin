@@ -9,6 +9,7 @@ const nodeTest = require('node:test');
 const { GuardError, assertSafePersonaPath, anonymousProbe } = require('../lib/guard');
 
 const remote = 'https://code.example.invalid/fictional/persona.git';
+const targetKeys = ['branch.main.remote', 'branch.main.pushRemote', 'remote.pushDefault'];
 
 // Each synchronous test gets isolated user config; restoration also runs on failure.
 function test(name, run) {
@@ -63,6 +64,430 @@ function isRefusal(repo, url) {
     return true;
   };
 }
+
+function isTargetRefusal(repo, key, url, verdict = 'unverifiable') {
+  return (error) => {
+    isRefusal(repo, url)(error);
+    assert.ok(error.message.includes(`from config key ${key.toLowerCase()} in Git repository`));
+    assert.ok(error.message.endsWith(`is ${verdict}; refusing to write persona data.`));
+    return true;
+  };
+}
+
+for (const key of targetKeys) {
+  for (const verdict of ['public', 'unknown', undefined, 'unexpected']) {
+    test(`a URL in ${key} with verdict ${String(verdict)} refuses and names the key and target`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      git(repo, 'config', key, remote);
+      const urls = [];
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: (url) => { urls.push(url); return verdict; },
+      }), isTargetRefusal(repo, key, remote, verdict === 'public' ? 'public' : 'unverifiable'));
+      assert.deepEqual(urls, [remote]);
+    });
+  }
+
+  test(`a private URL in ${key} allows writes and is probed once`, (t) => {
+    const repo = createRepo(temporaryDirectory(t));
+    git(repo, 'config', key, remote);
+    const urls = [];
+
+    assert.doesNotThrow(() => assertSafePersonaPath(repo, {
+      probe: (url) => { urls.push(url); return 'private'; },
+    }));
+    assert.deepEqual(urls, [remote]);
+  });
+
+  test(`a thrown probe for ${key} fails closed without printing its error`, (t) => {
+    const repo = createRepo(temporaryDirectory(t));
+    git(repo, 'config', key, remote);
+    const urls = [];
+
+    assert.throws(() => assertSafePersonaPath(repo, {
+      probe: (url) => { urls.push(url); throw new Error('PRIVATE_FILE_CONTENT'); },
+    }), isTargetRefusal(repo, key, remote));
+    assert.deepEqual(urls, [remote]);
+  });
+
+  test(`the local repository value . in ${key} allows writes without probing`, (t) => {
+    const repo = createRepo(temporaryDirectory(t));
+    git(repo, 'config', key, '.');
+    let calls = 0;
+
+    assert.doesNotThrow(() => assertSafePersonaPath(repo, {
+      probe: () => { calls += 1; return 'public'; },
+    }));
+    assert.equal(calls, 0);
+  });
+
+  test(`an existing remote name in ${key} uses its already enumerated URLs`, (t) => {
+    const repo = createRepo(temporaryDirectory(t), remote);
+    git(repo, 'config', key, 'origin');
+    for (const verdict of ['private', 'public']) {
+      const urls = [];
+      const check = () => assertSafePersonaPath(repo, {
+        probe: (url) => { urls.push(url); return verdict; },
+      });
+      if (verdict === 'private') assert.doesNotThrow(check);
+      else assert.throws(check, isRefusal(repo, remote));
+      assert.deepEqual(urls, [remote]);
+    }
+  });
+
+  for (const target of ['/fictional/persona.git', '../fictional/persona.git',
+    'ssh://git@code.example.invalid/fictional/persona.git', 'https://',
+    'https://[invalid]/persona.git', 'https://code.example.invalid/a b',
+    'https://code.example.invalid/a\\b', '--heads']) {
+    test(`unsupported target ${target} in ${key} refuses even if the probe returns private`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      git(repo, 'config', key, target);
+      const urls = [];
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: (url) => { urls.push(url); return 'private'; },
+      }), isTargetRefusal(repo, key, target.replace('ssh://git@', 'ssh://***@')));
+      assert.deepEqual(urls, [target]);
+    });
+  }
+
+  for (const rule of ['insteadOf', 'pushInsteadOf']) {
+    test(`the local repository value . in ${key} rewritten to public via ${rule} refuses`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      const rewritten = 'https://public.example.invalid/fictional/persona.git';
+      git(repo, 'config', key, '.');
+      git(repo, 'config', `url.${rewritten}.${rule}`, '.');
+      git(repo, 'config', 'remote.reference.url', '.');
+      const fetch = git(repo, 'remote', 'get-url', '--all', 'reference').toString().trim();
+      const push = git(repo, 'remote', 'get-url', '--push', '--all', 'reference').toString().trim();
+      assert.equal(rule === 'insteadOf' ? fetch : push, rewritten);
+      git(repo, 'config', '--unset-all', 'remote.reference.url');
+      assert.equal(git(repo, 'remote').toString(), '');
+      assert.equal(git(repo, 'ls-remote', '--get-url', '--', '.').toString().trim(), fetch);
+      const urls = [];
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: (url) => { urls.push(url); return url === rewritten ? 'public' : 'private'; },
+      }), isTargetRefusal(repo, key, '.'));
+      assert.deepEqual(urls, ['.', rewritten]);
+    });
+
+    test(`a URL in ${key} rewritten to public via ${rule} refuses and names the key`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      const prefix = 'https://public.example.invalid/fictional/';
+      const rewritten = `${prefix}persona.git`;
+      git(repo, 'config', key, remote);
+      git(repo, 'config', `url.${prefix}.${rule}`, 'https://code.example.invalid/fictional/');
+      // Use a temporary reference remote to cross-check Git's effective targets.
+      git(repo, 'config', 'remote.reference.url', remote);
+      const fetch = git(repo, 'remote', 'get-url', '--all', 'reference').toString().trim();
+      const push = git(repo, 'remote', 'get-url', '--push', '--all', 'reference').toString().trim();
+      assert.equal(rule === 'insteadOf' ? fetch : push, rewritten);
+      git(repo, 'config', '--unset-all', 'remote.reference.url');
+      assert.equal(git(repo, 'remote').toString(), '');
+      assert.equal(git(repo, 'ls-remote', '--get-url', '--', remote).toString().trim(), fetch);
+      const urls = [];
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: (url) => { urls.push(url); return url === rewritten ? 'public' : 'private'; },
+      }), isTargetRefusal(repo, key, rewritten, 'public'));
+      assert.deepEqual(new Set(urls), new Set([remote, fetch, push]));
+      assert.equal(urls.length, 2);
+    });
+  }
+
+  test(`the raw URL in ${key} is probed even when both rewrites are private`, (t) => {
+    const repo = createRepo(temporaryDirectory(t));
+    const fetch = 'https://private.example.invalid/fetch/persona.git';
+    const push = 'https://private.example.invalid/push/persona.git';
+    git(repo, 'config', key, remote);
+    git(repo, 'config', 'url.https://private.example.invalid/fetch/.insteadOf', 'https://code.example.invalid/fictional/');
+    git(repo, 'config', 'url.https://private.example.invalid/push/.pushInsteadOf', 'https://code.example.invalid/fictional/');
+    const urls = [];
+
+    assert.throws(() => assertSafePersonaPath(repo, {
+      probe: (url) => { urls.push(url); return url === remote ? 'public' : 'private'; },
+    }), isTargetRefusal(repo, key, remote, 'public'));
+    assert.deepEqual(urls, [remote, fetch, push]);
+  });
+
+  test(`refusals for ${key} redact userinfo, query strings and fragments`, (t) => {
+    const repo = createRepo(temporaryDirectory(t));
+    const target = `${remote.replace('https://', 'https://sample-user:SAMPLE_SECRET@')}?token=SAMPLE_QUERY_SECRET#SAMPLE_FRAGMENT_SECRET`;
+    git(repo, 'config', key, target);
+    for (const verdict of ['public', 'unknown']) {
+      const urls = [];
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: (url) => { urls.push(url); return verdict; },
+      }), (error) => {
+        isTargetRefusal(repo, key, `${remote.replace('https://', 'https://***@')}?***#***`, verdict === 'public' ? 'public' : 'unverifiable')(error);
+        for (const secret of ['sample-user', 'SAMPLE_SECRET', 'SAMPLE_QUERY_SECRET', 'SAMPLE_FRAGMENT_SECRET']) {
+          assert.ok(!error.message.includes(secret));
+        }
+        return true;
+      });
+      assert.deepEqual(urls, [target]);
+    }
+  });
+
+  for (const value of ['', `${remote}\nPRIVATE_FILE_CONTENT`, `${remote}\rPRIVATE_FILE_CONTENT`]) {
+    test(`an unparseable value in ${key} refuses before probing`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      git(repo, 'config', key, value);
+      let calls = 0;
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: () => { calls += 1; return 'private'; },
+      }), isTargetRefusal(repo, key, '<unparseable>'));
+      assert.equal(calls, 0);
+    });
+  }
+}
+
+for (const key of targetKeys) {
+  for (const source of ['include.path', 'includeIf.gitdir', 'worktree', 'HOME .gitconfig',
+    'XDG git/config', 'global includeIf.gitdir']) {
+    test(`${key} from ${source} is visible to Git and refused`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      const config = key === 'remote.pushDefault'
+        ? `[remote]\n\tpushDefault = ${remote}\n`
+        : `[branch "main"]\n\t${key.split('.').at(-1)} = ${remote}\n`;
+      if (source === 'worktree') {
+        git(repo, 'config', 'extensions.worktreeConfig', 'true');
+        git(repo, 'config', '--worktree', key, remote);
+      } else if (source === 'HOME .gitconfig') {
+        fs.writeFileSync(path.join(process.env.HOME, '.gitconfig'), config);
+      } else if (source === 'XDG git/config') {
+        const dir = path.join(process.env.XDG_CONFIG_HOME, 'git');
+        fs.mkdirSync(dir);
+        fs.writeFileSync(path.join(dir, 'config'), config);
+      } else if (source === 'global includeIf.gitdir') {
+        fs.writeFileSync(path.join(process.env.HOME, 'targets.inc'), config);
+        fs.writeFileSync(path.join(process.env.HOME, '.gitconfig'), `[includeIf "gitdir:${repo}/.git"]\n\tpath = targets.inc\n`);
+      } else {
+        fs.writeFileSync(path.join(repo, '.git', 'targets.inc'), config);
+        git(repo, 'config', source === 'include.path' ? 'include.path' : `includeIf.gitdir:${repo}/.git.path`, 'targets.inc');
+      }
+      assert.equal(git(repo, 'config', '--includes', '--get', key).toString().trim(), remote);
+      const urls = [];
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: (url) => { urls.push(url); return 'public'; },
+      }), isTargetRefusal(repo, key, remote, 'public'));
+      assert.deepEqual(urls, [remote]);
+    });
+  }
+
+  test(`Git environment overrides cannot hide ${key} locally or globally`, (t) => {
+    const root = temporaryDirectory(t);
+    const decoy = createRepo(path.join(root, 'decoy'));
+    const decoyConfig = path.join(decoy, '.git', 'config');
+    for (const scope of ['--local', '--global']) {
+      const repo = createRepo(path.join(root, scope.slice(2)));
+      git(repo, 'config', scope, key, remote);
+      for (const values of [
+        { GIT_DIR: path.join(decoy, '.git') },
+        { GIT_DIR: path.join(decoy, '.git'), GIT_WORK_TREE: decoy },
+        { GIT_COMMON_DIR: path.join(decoy, '.git') },
+        { GIT_CONFIG: decoyConfig },
+        { GIT_CONFIG_GLOBAL: decoyConfig, GIT_CONFIG_SYSTEM: decoyConfig, GIT_CONFIG_NOSYSTEM: '1' },
+        { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: key, GIT_CONFIG_VALUE_0: '.' },
+        { GIT_CONFIG_PARAMETERS: `'${key}=.'` },
+      ]) {
+        withEnvironment(values, () => {
+          const urls = [];
+          assert.throws(() => assertSafePersonaPath(repo, {
+            probe: (url) => { urls.push(url); return 'public'; },
+          }), isTargetRefusal(repo, key, remote, 'public'));
+          assert.deepEqual(urls, [remote]);
+        });
+      }
+    }
+  });
+
+  for (const failure of [
+    { code: 'ENOENT' }, { code: 'ETIMEDOUT', signal: 'SIGTERM' },
+    { status: 1, stdout: '', stderr: '' }, { status: 128, stderr: 'PRIVATE_FILE_CONTENT' },
+  ]) {
+    test(`${key} URL resolution failure ${JSON.stringify(failure)} refuses before probing`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      git(repo, 'config', key, remote);
+      const originalExec = childProcess.execFileSync;
+      let resolutions = 0;
+      t.mock.method(childProcess, 'execFileSync', (command, args, options) => {
+        if (args.includes('ls-remote')) {
+          resolutions += 1;
+          throw Object.assign(new Error('PRIVATE_FILE_CONTENT'), failure);
+        }
+        return originalExec(command, args, options);
+      });
+      let calls = 0;
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: () => { calls += 1; return 'private'; },
+      }), isTargetRefusal(repo, key, remote));
+      assert.equal(resolutions, 1);
+      assert.equal(calls, 0);
+    });
+  }
+
+  for (const output of [null, '', 'PRIVATE_FILE_CONTENT', '\0\n', '\r\n', '\n', `${remote}\n\n`, `${remote}\n${remote}\n`]) {
+    test(`${key} unparseable URL resolution ${JSON.stringify(output)} refuses before probing`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      git(repo, 'config', key, remote);
+      const originalExec = childProcess.execFileSync;
+      let resolutions = 0;
+      t.mock.method(childProcess, 'execFileSync', (command, args, options) => {
+        if (args.includes('ls-remote')) {
+          resolutions += 1;
+          return output;
+        }
+        return originalExec(command, args, options);
+      });
+      let calls = 0;
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: () => { calls += 1; return 'private'; },
+      }), isTargetRefusal(repo, key, remote));
+      assert.equal(resolutions, 1);
+      assert.equal(calls, 0);
+    });
+  }
+}
+
+for (const source of ['include.path', 'worktree', 'global']) {
+  for (const rule of ['insteadOf', 'pushInsteadOf']) {
+    test(`${rule} from ${source} rewrites a branch target to public`, (t) => {
+      const repo = createRepo(temporaryDirectory(t));
+      const key = 'branch.main.pushRemote';
+      const prefix = 'https://public.example.invalid/Fictional/';
+      const rewritten = `${prefix}persona.git`;
+      git(repo, 'config', key, remote);
+      if (source === 'include.path') {
+        fs.writeFileSync(path.join(repo, '.git', 'rewrites.inc'), `[url "${prefix}"]\n\t${rule} = https://code.example.invalid/fictional/\n`);
+        git(repo, 'config', 'include.path', 'rewrites.inc');
+      } else if (source === 'worktree') {
+        git(repo, 'config', 'extensions.worktreeConfig', 'true');
+        git(repo, 'config', '--worktree', `url.${prefix}.${rule}`, 'https://code.example.invalid/fictional/');
+      } else {
+        git(repo, 'config', '--global', `url.${prefix}.${rule}`, 'https://code.example.invalid/fictional/');
+      }
+      git(repo, 'config', 'remote.reference.url', remote);
+      assert.equal(git(repo, 'remote', 'get-url', ...(rule === 'pushInsteadOf' ? ['--push'] : []), 'reference').toString().trim(), rewritten);
+      git(repo, 'config', '--unset-all', 'remote.reference.url');
+      const urls = [];
+
+      assert.throws(() => assertSafePersonaPath(repo, {
+        probe: (url) => { urls.push(url); return url === rewritten ? 'public' : 'private'; },
+      }), isTargetRefusal(repo, key, rewritten, 'public'));
+      assert.deepEqual(urls, [remote, rewritten]);
+    });
+  }
+}
+
+for (const longestPublic of [false, true]) {
+  test(`pushInsteadOf uses the longest matching prefix when it is ${longestPublic ? 'public' : 'private'}`, (t) => {
+    const repo = createRepo(temporaryDirectory(t));
+    const key = 'remote.pushDefault';
+    const short = 'https://short.example.invalid/';
+    const long = 'https://long.example.invalid/';
+    const rewritten = `${long}persona.git`;
+    git(repo, 'config', key, remote);
+    git(repo, 'config', `url.${long}.pushInsteadOf`, 'https://code.example.invalid/fictional/');
+    git(repo, 'config', `url.${short}.pushInsteadOf`, 'https://code.example.invalid/');
+    git(repo, 'config', 'remote.reference.url', remote);
+    assert.equal(git(repo, 'remote', 'get-url', '--push', 'reference').toString().trim(), rewritten);
+    git(repo, 'config', '--unset-all', 'remote.reference.url');
+    const urls = [];
+    const check = () => assertSafePersonaPath(repo, {
+      probe: (url) => {
+        urls.push(url);
+        if (url === remote) return 'private';
+        return (url === rewritten) === longestPublic ? 'public' : 'private';
+      },
+    });
+
+    if (longestPublic) assert.throws(check, isTargetRefusal(repo, key, rewritten, 'public'));
+    else assert.doesNotThrow(check);
+    assert.deepEqual(urls, [remote, rewritten]);
+  });
+}
+
+test('pushInsteadOf ties follow Git base order, including multiple prefixes per base', (t) => {
+  const repo = createRepo(temporaryDirectory(t));
+  const key = 'branch.main.remote';
+  const first = 'https://public.example.invalid/fictional/';
+  const second = 'https://private.example.invalid/fictional/';
+  const rewritten = `${first}persona.git`;
+  git(repo, 'config', key, remote);
+  git(repo, 'config', `url.${first}.pushInsteadOf`, 'https://unmatched.example.invalid/');
+  git(repo, 'config', `url.${second}.pushInsteadOf`, 'https://code.example.invalid/fictional/');
+  git(repo, 'config', '--add', `url.${first}.pushInsteadOf`, 'https://code.example.invalid/fictional/');
+  git(repo, 'config', 'remote.reference.url', remote);
+  assert.equal(git(repo, 'remote', 'get-url', '--push', 'reference').toString().trim(), rewritten);
+  git(repo, 'config', '--unset-all', 'remote.reference.url');
+  const urls = [];
+
+  assert.throws(() => assertSafePersonaPath(repo, {
+    probe: (url) => { urls.push(url); return url === rewritten ? 'public' : 'private'; },
+  }), isTargetRefusal(repo, key, rewritten, 'public'));
+  assert.deepEqual(urls, [remote, rewritten]);
+});
+
+test('an empty pushInsteadOf prefix rewrites a branch target just as Git does', (t) => {
+  const repo = createRepo(temporaryDirectory(t));
+  const key = 'branch.main.remote';
+  const base = 'https://public.example.invalid/';
+  const rewritten = base + remote;
+  git(repo, 'config', key, remote);
+  git(repo, 'config', `url.${base}.pushInsteadOf`, '');
+  git(repo, 'config', 'remote.reference.url', remote);
+  assert.equal(git(repo, 'remote', 'get-url', '--push', 'reference').toString().trim(), rewritten);
+  git(repo, 'config', '--unset-all', 'remote.reference.url');
+  const urls = [];
+
+  assert.throws(() => assertSafePersonaPath(repo, {
+    probe: (url) => { urls.push(url); return url === rewritten ? 'public' : 'private'; },
+  }), isTargetRefusal(repo, key, rewritten, 'public'));
+  assert.deepEqual(urls, [remote, rewritten]);
+});
+
+test('an empty pushInsteadOf prefix rewrites remote.pushDefault=. to public and refuses', (t) => {
+  const repo = createRepo(temporaryDirectory(t));
+  const key = 'remote.pushDefault';
+  const base = 'https://public.example.invalid/fictional/';
+  const rewritten = `${base}.`;
+  git(repo, 'config', key, '.');
+  git(repo, 'config', `url.${base}.pushInsteadOf`, '');
+  git(repo, 'config', 'remote.reference.url', '.');
+  assert.equal(git(repo, 'remote', 'get-url', '--push', 'reference').toString().trim(), rewritten);
+  git(repo, 'config', '--unset-all', 'remote.reference.url');
+  assert.equal(git(repo, 'ls-remote', '--get-url', '--', '.').toString().trim(), '.');
+  const urls = [];
+
+  assert.throws(() => assertSafePersonaPath(repo, {
+    probe: (url) => { urls.push(url); return url === rewritten ? 'public' : 'private'; },
+  }), isTargetRefusal(repo, key, '.'));
+  assert.deepEqual(urls, ['.', rewritten]);
+});
+
+test('branch.main.remote=. rewritten via pushInsteadOf refuses even with a private origin', (t) => {
+  const repo = createRepo(temporaryDirectory(t), remote);
+  const key = 'branch.main.remote';
+  const rewritten = 'https://public.example.invalid/fictional/persona.git';
+  git(repo, 'config', key, '.');
+  git(repo, 'config', `url.${rewritten}.pushInsteadOf`, '.');
+  git(repo, 'config', 'remote.reference.url', '.');
+  assert.equal(git(repo, 'remote', 'get-url', '--push', 'reference').toString().trim(), rewritten);
+  git(repo, 'config', '--unset-all', 'remote.reference.url');
+  assert.equal(git(repo, 'remote', 'get-url', '--push', 'origin').toString().trim(), remote);
+  const urls = [];
+
+  assert.throws(() => assertSafePersonaPath(repo, {
+    probe: (url) => { urls.push(url); return url === rewritten ? 'public' : 'private'; },
+  }), isTargetRefusal(repo, key, '.'));
+  assert.deepEqual(urls, [remote, '.', rewritten]);
+});
 
 test('no repository allows an existing or missing persona without probing', (t) => {
   const dir = temporaryDirectory(t);
@@ -719,6 +1144,7 @@ test('no raw URL matches still checks the effective URLs of a named remote', (t)
 
 test('all repository inspection commands use the real repo and only strip GIT_* environment keys', (t) => {
   const repo = createRepo(temporaryDirectory(t), remote);
+  git(repo, 'config', 'branch.main.pushRemote', remote);
   const originalExec = childProcess.execFileSync;
   const spy = t.mock.method(childProcess, 'execFileSync', (...args) => originalExec(...args));
 
@@ -733,13 +1159,15 @@ test('all repository inspection commands use the real repo and only strip GIT_* 
     expectedEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
     assert.throws(() => assertSafePersonaPath(repo, { probe: () => 'public' }), isRefusal(repo, remote));
   });
-  assert.equal(spy.mock.callCount(), 5);
+  assert.equal(spy.mock.callCount(), 6);
   assert.deepEqual(spy.mock.calls.map(({ arguments: args }) => args[1]), [
     ['-C', repo, 'rev-parse', '--git-common-dir'],
-    ['-C', repo, 'config', '--includes', '--null', '--get-regexp', '^remote\\..*\\.(url|pushurl)$'],
+    ['-C', repo, 'config', '--includes', '--null', '--get-regexp',
+      '^remote\\..*\\.(url|pushurl)$|^branch\\..*\\.(remote|pushremote)$|^remote\\.pushdefault$|^url\\..*\\.pushinsteadof$'],
     ['-C', repo, 'remote'],
     ['-C', repo, 'remote', 'get-url', '--all', '--', 'origin'],
     ['-C', repo, 'remote', 'get-url', '--push', '--all', '--', 'origin'],
+    ['-C', repo, 'ls-remote', '--get-url', '--', remote],
   ]);
   for (const { arguments: [command, _args, options] } of spy.mock.calls) {
     assert.equal(command, 'git');
