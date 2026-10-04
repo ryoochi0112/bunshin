@@ -1,0 +1,13 @@
+node_modules/
+/personas/
+/bunshin-personas/
+
+persona.json
+pairs.jsonl
+interview.jsonl
+identity.json
+
+!/sample/persona/**/persona.json
+!/sample/persona/**/pairs.jsonl
+!/sample/persona/**/interview.jsonl
+!/sample/persona/**/identity.json

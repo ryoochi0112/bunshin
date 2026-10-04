@@ -1,0 +1,16 @@
+{
+  "name": "bunshin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Build, test, and export a persona of one person.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "bunshin": "bin/bunshin.js"
+  },
+  "scripts": {
+    "test": "make verify"
+  }
+}
