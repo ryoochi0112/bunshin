@@ -127,11 +127,13 @@ test('JSON examples parse, match the fictional sample, and pass their validators
   }
 });
 
-test('README states the M1 scope and links to the format reference', () => {
+test('README states the M2 scope and limits and links to the format reference', () => {
   const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
-  assert.match(readme, /M1 status: engine only/);
-  assert.match(readme, /Skills are not available yet/);
-  assert.match(readme, /install-to-report walkthrough is planned for M2/);
+  assert.match(readme, /^## 5-minute sample path$/m);
+  assert.match(readme, /^M2: Claude Code path covers criteria 1–14: .+\.$/m);
+  assert.match(readme, /^Harvest needs the Slack connector and runs on Claude Code only\.$/m);
+  assert.match(readme, /^The sample report says "sample too small" because the sample has 3 held-out pairs\.$/m);
+  assert.match(readme, /^Codex host support is planned for M3\.$/m);
   assert.match(readme, /\[docs\/formats\.md\]\(docs\/formats\.md\)/);
   assert.match(readme, /MIT/);
 });
