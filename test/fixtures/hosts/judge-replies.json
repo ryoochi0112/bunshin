@@ -1,0 +1,8 @@
+{
+  "default": "{\"rating\":\"needs_edits\",\"reason\":\"Synthetic comparison.\",\"claims\":[],\"wrong_uncited\":0,\"language_match\":true}",
+  "replies": {
+    "Should the search experiment": "{\"rating\":\"send_as_is\",\"reason\":\"Preserves the small experiment.\",\"claims\":[{\"text\":\"Test labels first.\",\"cited\":false,\"correct\":true}],\"wrong_uncited\":0,\"language_match\":true}",
+    "カードの色を増やす案": "invalid synthetic JSON",
+    "Tidepoolの並び順": "{\"rating\":\"wrong\",\"reason\":\"Synthetic incorrect count.\",\"claims\":[{\"text\":\"Everyone sees the new order.\",\"cited\":false,\"correct\":false}],\"wrong_uncited\":0,\"language_match\":true}"
+  }
+}
