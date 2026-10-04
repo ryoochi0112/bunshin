@@ -1,4 +1,4 @@
-.PHONY: verify syntax test
+.PHONY: verify syntax test acceptance
 
 verify: syntax test
 
@@ -14,3 +14,6 @@ syntax:
 
 test:
 	node --test test/*.test.js
+
+acceptance:
+	node scripts/acceptance.js --host claude

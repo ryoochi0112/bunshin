@@ -365,3 +365,198 @@ Each line links an interview answer to observed build-set pairs. A conflict can 
 ```
 
 `identity.md` is rendered from `identity.json`. Bunshin writes the header, then the Voice, Priorities, Typical objections, and Context rules sections. Each trait appears as a bullet with evidence links below it. Do not edit `identity.md` by hand.
+
+## Draft record: `drafts.jsonl`
+
+Each line in `evals/<run_id>/drafts.jsonl` records a draft. The layer recorded here determines the report layer, even if a case is later relabeled.
+
+| Field | Meaning |
+| --- | --- |
+| `case_id` | Held-out case id. |
+| `layer` | `knowledge` or `judgment`. |
+| `skill` | `spec-answer` or `idea-discussion`. |
+| `draft` | Generated answer text. |
+| `drafter` | Host and returned model object. |
+| `drafter.host` | Host that generated the draft. |
+| `drafter.model` | Recorded model name, or `null` for default. |
+| `at` | ISO timestamp of the draft. |
+
+### Example: `drafts.jsonl`
+
+```json
+{"case_id":"sample-10","layer":"judgment","skill":"idea-discussion","draft":"Try two search labels before widening the experiment.","drafter":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
+```
+
+## Judgment record: `judgments.jsonl`
+
+Each line in `evals/<run_id>/judgments.jsonl` contains a validated judge result or a `judge_error`. Wrong uncited facts count claims with `cited: false` and `correct: false`.
+
+| Field | Meaning |
+| --- | --- |
+| `case_id` | Held-out case id. |
+| `rating` | `send_as_is`, `needs_edits`, `wrong`, or `judge_error`. |
+| `reason` | Judge explanation; errors use `invalid judge output`. |
+| `claims` | Claim list; absent on `judge_error`. |
+| `claims[].text` | Claim text. |
+| `claims[].cited` | Whether the claim has a citation. |
+| `claims[].correct` | `true`, `false`, or `null` when unknown. |
+| `wrong_uncited` | Count of wrong uncited claims; absent on `judge_error`. |
+| `language_match` | Whether the language matches the question; absent on `judge_error`. |
+| `judge` | Host and returned model object. |
+| `judge.host` | Judge host. |
+| `judge.model` | Recorded model name, or `null` for default. |
+| `at` | ISO timestamp of the judgment. |
+
+### Example: `judgments.jsonl`
+
+```json
+{"case_id":"sample-10","rating":"send_as_is","reason":"The draft preserves the small experiment.","claims":[],"wrong_uncited":0,"language_match":true,"judge":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
+```
+
+After two invalid judge responses, the error row contains only the following fields. It is excluded from rates and counted separately as `judge_errors`.
+
+### Example: `judge_error`
+
+```json
+{"case_id":"sample-12","rating":"judge_error","reason":"invalid judge output","judge":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
+```
+
+## Report: `report.json` and `report.md`
+
+`eval report` writes both files under `evals/<run_id>/`, replacing JSON first and Markdown second through atomic writes. Rerunning restores both files after interruption. Without `--run`, it selects the latest date and then numeric sequence. Deltas compare judge rates against the latest earlier run with a report.
+
+Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone. The bar applies `launch_bar.min_heldout`, `min_per_layer`, and `send_as_is`, plus zero knowledge wrong uncited facts.
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | Report format version, `1`. |
+| `persona` | Persona name. |
+| `display_name` | Owner's display name. |
+| `run_id` | Run date and numeric sequence. |
+| `persona_version` | Version saved in the run, independent of current version. |
+| `heldout` | Held-out case counts from `cases.jsonl`, drafted or not: `n`, `knowledge`, `judgment`. |
+| `knowledge` | Judge statistics: `n`, `send_as_is`, `send_as_is_rate`, `wrong_uncited`. |
+| `judgment` | Same judge statistics for the judgment layer. |
+| `overall_rate` | Total judge send-as-is divided by valid judgments; `null` when empty. |
+| `delta` | Per-layer change in rounded percentage points; `null` without comparable rates. |
+| `drafter` | `host` and distinct recorded `models` list. |
+| `judge` | `host` and distinct recorded `models` list, including judge errors. |
+| `judge_trust` | `trusted`, `untrusted`, or `uncalibrated`. |
+| `agreement` | `{match, rated}`, or `null` without calibration. |
+| `basis` | `judge` when trusted, otherwise `owner_ratings`. |
+| `bar_n` | Valid case ratings counted for the selected launch-bar basis. |
+| `launch_bar` | `met`, `not_met`, or `sample_too_small`. |
+| `judge_errors` | Number of judge-error rows, excluded from rates. |
+| `unjudged` | Drafted cases with no judgment row. |
+| `undrafted` | Held-out cases with no draft. |
+| `complete` | `true` only when every held-out case has a draft and a judgment row (judge errors count) and the run has no `limit`. Otherwise `launch_bar` is `sample_too_small`. |
+
+### Example: `report.json`
+
+```json
+{
+  "format_version": 1,
+  "persona": "sample",
+  "display_name": "Sora Aoki",
+  "run_id": "2026-10-20-01",
+  "persona_version": 1,
+  "heldout": {
+    "n": 1,
+    "knowledge": 0,
+    "judgment": 1
+  },
+  "knowledge": {
+    "n": 0,
+    "send_as_is": 0,
+    "send_as_is_rate": null,
+    "wrong_uncited": 0
+  },
+  "judgment": {
+    "n": 1,
+    "send_as_is": 1,
+    "send_as_is_rate": 1,
+    "wrong_uncited": 0
+  },
+  "overall_rate": 1,
+  "delta": {
+    "knowledge": null,
+    "judgment": null
+  },
+  "drafter": {
+    "host": "fake",
+    "models": [
+      "fake"
+    ]
+  },
+  "judge": {
+    "host": "fake",
+    "models": [
+      "fake"
+    ]
+  },
+  "judge_trust": "uncalibrated",
+  "agreement": null,
+  "basis": "owner_ratings",
+  "bar_n": 0,
+  "launch_bar": "sample_too_small",
+  "judge_errors": 0,
+  "unjudged": 0,
+  "undrafted": 0,
+  "complete": true
+}
+```
+
+### Example: `report.md`
+
+```text
+bunshin eval — persona sample @ v1 — 2026-10-20
+held-out: 1 pairs (knowledge 0, judgment 1)
+knowledge: send as-is n/a · wrong fact without citation 0
+judgment:  send as-is 100%
+overall:   send as-is 100%  → sample too small
+judge agreement with Sora Aoki: not calibrated → uncalibrated
+drafter: fake fake · judge: fake fake
+launch bar basis: Sora Aoki's ratings (0 rated)
+```
+
+The Markdown layout has seven required lines: persona/version/date, drafted counts, knowledge judge rate and wrong uncited facts, judgment judge rate, overall judge rate and bar status, calibration agreement and trust, then drafter and judge hosts and models. Percentages use `Math.round(100 * rate)`; empty rates print `n/a`. Only per-layer rates have deltas, formatted `(+8)`, `(-3)`, or `(+0)`. Models are distinct recorded values joined by `, `; `null` or an empty list prints `default`.
+
+After those lines, show only applicable lines in this order: `judge errors: <n> (excluded from rates)` when nonzero, `not judged: <n>` when nonzero, `not drafted: <n>` when nonzero, `incomplete: <done> of <n> held-out cases drafted and judged — no launch-bar claim` when `complete` is false, and `launch bar basis: <display_name>'s ratings (<n> rated)` whenever the basis is owner ratings. The file ends with one newline.
+
+
+## Calibration queue item: `queue.jsonl`
+
+Each line in `calibration/<run_id>/queue.jsonl` selects a draft with a valid judgment. Sampling defaults to 30 items, alternates knowledge and judgment when possible, and stores one seed for the run. An existing queue is never resampled. `calibrate next` shows the question, draft and reference answer without the judge's result.
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | Format version, `1`. |
+| `run_id` | Eval run date and numeric sequence. |
+| `seed` | Sixteen lowercase hex characters from eight random bytes. |
+| `position` | One-based queue position. |
+| `case_id` | Selected held-out case id. |
+| `layer` | Draft layer: `knowledge` or `judgment`. |
+
+### Example: `queue.jsonl`
+
+```json
+{"format_version":1,"run_id":"2026-10-20-01","seed":"0123456789abcdef","position":1,"case_id":"sample-10","layer":"judgment"}
+```
+
+## Owner rating: `ratings.jsonl`
+
+Each line in `calibration/<run_id>/ratings.jsonl` records an owner rating. Re-rating appends a row; the latest row per case id for this run wins in agreement and reports. Agreement counts only cases with valid judgments, excluding judge errors. Trust uses the same minimum of 30 ratings and the persona's `launch_bar.min_agreement` as the report.
+
+| Field | Meaning |
+| --- | --- |
+| `case_id` | Rated queue case id. |
+| `run_id` | Eval run date and numeric sequence. |
+| `rating` | `send_as_is`, `needs_edits`, or `wrong`. |
+| `wrong_uncited_fact` | Boolean, present only for knowledge drafts rated `wrong`; `--wrong-uncited-fact yes` or `no` is required for these ratings and refused otherwise. |
+| `rated_at` | ISO timestamp when the owner rated the draft. |
+
+### Example: `ratings.jsonl`
+
+```json
+{"case_id":"sample-09","run_id":"2026-10-20-01","rating":"wrong","wrong_uncited_fact":true,"rated_at":"2026-10-20T00:00:00.000Z"}
+```

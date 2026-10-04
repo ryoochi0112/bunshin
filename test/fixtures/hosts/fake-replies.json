@@ -1,0 +1,8 @@
+{
+  "default": "I do not know.\nSources: none",
+  "replies": {
+    "preview duration": "The fictional preview lasts seven days.\nSources:\n- Preview policy — https://example.invalid/preview",
+    "preview": "Please ask which preview policy applies.\nSources: none",
+    "new idea": "Try a small pilot first. What evidence would justify expansion? (priority: Small reversible experiments)"
+  }
+}

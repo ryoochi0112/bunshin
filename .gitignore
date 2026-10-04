@@ -17,6 +17,10 @@ calibration/
 shadow/
 export/
 
+!/skills/**
+!/templates/**
+!/test/fixtures/**
+
 !/sample/persona/**/persona.json
 !/sample/persona/**/pairs.jsonl
 !/sample/persona/**/split.json
