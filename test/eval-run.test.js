@@ -250,7 +250,7 @@ test('in-process command output, usage, defaults and host error exit status', as
   const dir = fixture(t);
   const result = await cli(['run', '--persona', dir, '--drafter', drafter, '--judge', judgeSpec, '--limit', '1']);
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /^run \d{4}-\d{2}-\d{2}-01: drafted 1, judged 1, judge errors 0\n$/);
+  assert.match(result.stdout, /^run \d{4}-\d{2}-\d{2}-01: drafted 1, judged 1, judge errors 0\nbunshin eval — persona sample @ v\d+ — \d{4}-\d{2}-\d{2}\n/);
   assert.equal(result.stderr, '');
   for (const args of [[], ['missing'], ['run', '--limit'], ['run', '--limit', '0'], ['run', '--limit', '1.5'],
     ['run', '--limit', '1', '--limit', '2'], ['run', 'extra'], ['run', '--unknown', 'value']]) {
