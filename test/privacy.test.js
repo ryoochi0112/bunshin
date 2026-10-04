@@ -133,6 +133,10 @@ test('gitignore protects every private persona file and permits sample files des
     .map((file) => (sensitiveDirectories.includes(file) ? `${dir}/${file}/run-1/report.json` : `${dir}/${file}`));
   // Outside /personas/, so each filename rule is what ignores the path.
   const privatePaths = [...files('stray/x'), 'stray/x/.identity-transaction.json'];
+  const codePaths = [
+    'templates/export/README.md', 'skills/export/SKILL.md', 'skills/shadow/SKILL.md', 'skills/calibrate/SKILL.md',
+    'test/fixtures/evals/run-1/report.json', 'test/fixtures/shadow/s1/question.json', 'test/fixtures/persona.json',
+  ];
   for (const environment of [env, hostile]) {
     // --no-index also checks ignore rules after the sample is tracked.
     const ignored = git(root, ['check-ignore', '--no-index', '--', ...privatePaths], environment);
@@ -145,5 +149,10 @@ test('gitignore protects every private persona file and permits sample files des
     assert.equal(sample.status, 1, sample.stderr);
     assert.equal(sample.stdout, '');
     assert.equal(sample.stderr, '');
+    const code = git(root, ['check-ignore', '--no-index', '--', ...codePaths], environment);
+    assert.equal(code.error, undefined);
+    assert.equal(code.status, 1, code.stderr);
+    assert.equal(code.stdout, '');
+    assert.equal(code.stderr, '');
   }
 });
