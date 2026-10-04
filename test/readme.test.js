@@ -151,6 +151,16 @@ test('acceptance spec checks reject invalid blocks and missing abstention', () =
   assert.throws(() => acceptance.requireSpec('Answer.\nSources:\n- Sample — https://example.invalid/page', true), /exactly Sources: none/);
 });
 
+function cleanRaw() {
+  const search = 'mcp__claude_ai_Notion__notion-search';
+  return [
+    { type: 'system', subtype: 'init', plugins: [{ name: 'telemetry', path: 'builtin', source: 'telemetry@builtin' }], slash_commands: ['debug'], skills: ['debug'] },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'n1', name: search, input: {} }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'n1', content: [] }] } },
+    { type: 'result', result: 'ok', permission_denials: [] },
+  ];
+}
+
 // Inject model/process results so verify remains offline; the real CLI path is tested above.
 function offlineAcceptance({ hostReply, processReply } = {}) {
   const io = capture();
@@ -164,7 +174,7 @@ function offlineAcceptance({ hostReply, processReply } = {}) {
       const index = hostIndex++;
       const fallback = index === 1 ? 'Try a small pilot. How can it be rolled back? (priority: Reversibility)'
         : index === 2 ? 'わかりません。\nSources: none' : 'I do not know.\nSources: none';
-      return { text: hostReply ? await hostReply(index, fallback) : fallback };
+      return { text: hostReply ? await hostReply(index, fallback) : fallback, raw: cleanRaw() };
     },
     processRun: async (command, args, options) => {
       homes.add(options.env.BUNSHIN_HOME);
@@ -201,13 +211,13 @@ function offlineAcceptance({ hostReply, processReply } = {}) {
   };
 }
 
-test('acceptance performs all five checks with composed prompts and cleans up', async () => {
+test('acceptance performs all six checks with composed prompts and cleans up', async () => {
   const stub = offlineAcceptance();
   assert.equal(await acceptance.main(['--host', 'claude', '--model', 'haiku'], stub), 0);
-  assert.equal(stub.io.output.stdout, 'PASS 1 spec no-source\nPASS 2 idea priority\nPASS 3 language\nPASS 4 eval provenance\nPASS 5 export package\nacceptance: 5/5 passed\n');
-  assert.equal(stub.calls.length, 4);
-  for (const call of stub.calls) {
-    assert.equal(call.tools, 'none');
+  assert.equal(stub.io.output.stdout, 'PASS 1 spec no-source\nPASS 2 idea priority\nPASS 3 language\nPASS 4 eval provenance\nPASS 5 export package\nPASS 6 drafter isolation\nacceptance: 6/6 passed\n');
+  assert.equal(stub.calls.length, 5);
+  for (const [index, call] of stub.calls.entries()) {
+    assert.equal(call.tools, index === 1 ? 'none' : 'notion-read');
     assert.equal(call.model, 'haiku');
     assert.deepEqual(call.allowedTools, require('../lib/hosts').allowedTools({}));
     assert.ok(call.timeoutMs > 0 && call.timeoutMs <= 300000);
@@ -224,9 +234,9 @@ test('acceptance reports every failure and cleans up after host and process erro
   });
   assert.equal(await acceptance.main(['--host', 'claude'], stub), 1);
   const lines = stub.io.output.stdout.trimEnd().split('\n');
-  assert.equal(lines.length, 6);
-  for (let i = 0; i < 5; i++) assert.match(lines[i], new RegExp(`^FAIL ${i + 1} .+: .+`));
-  assert.equal(lines[5], 'acceptance: 0/5 passed');
+  assert.equal(lines.length, 7);
+  for (let i = 0; i < 6; i++) assert.match(lines[i], new RegExp(`^FAIL ${i + 1} .+: .+`));
+  assert.equal(lines[6], 'acceptance: 0/6 passed');
   for (const home of stub.homes) assert.equal(fs.existsSync(home), false);
 });
 
@@ -251,7 +261,7 @@ test('acceptance fails individual semantic and output conditions', async () => {
     const stub = offlineAcceptance(scenario);
     assert.equal(await acceptance.main(['--host', 'claude'], stub), 1);
     assert.match(stub.io.output.stdout, new RegExp(`^FAIL ${scenario.check} `, 'm'));
-    assert.match(stub.io.output.stdout, /acceptance: 4\/5 passed\n$/);
+    assert.match(stub.io.output.stdout, /acceptance: 5\/6 passed\n$/);
     for (const home of stub.homes) assert.equal(fs.existsSync(home), false);
   }
 });

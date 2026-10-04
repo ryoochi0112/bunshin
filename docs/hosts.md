@@ -161,3 +161,4 @@ Findings:
 5. Once, the model called `notion-ai-search` (not allowed) instead of
    `notion-search`; the denial is safe. This is a known prompt-side issue for T3:
    request the explicitly allowed notion-search and notion-fetch capabilities.
+6. Acceptance check 6 proves "no user context" from the init event (only builtin plugins, no namespaced slash commands or skills); a missing global CLAUDE.md cannot be observed in any event, so it rests on `--setting-sources ""` alone.

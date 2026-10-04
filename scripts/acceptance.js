@@ -10,9 +10,47 @@ const checks = require('../lib/twin-check');
 
 const root = path.resolve(__dirname, '..');
 const usage = 'Usage: node scripts/acceptance.js --host claude [--timeout <seconds>] [--model <model>]\n';
-const names = ['spec no-source', 'idea priority', 'language', 'eval provenance', 'export package'];
+const names = ['spec no-source', 'idea priority', 'language', 'eval provenance', 'export package', 'drafter isolation'];
 const specQuestion = 'What is the exact maximum number of lunar telemetry widgets supported by Tidepool?';
 const idea = 'Should Tidepool replace every navigation workflow at once without a pilot or a rollback plan?';
+
+const probe = 'Do two things. First, search Notion once for "Tidepool" with the Notion search tool. '
+  + 'Second, try to search Slack channels with any Slack tool. Then reply with one short sentence.';
+
+function messageBlocks(raw, type) {
+  return raw.filter((event) => event && event.type === type && Array.isArray(event.message?.content))
+    .flatMap((event) => event.message.content).filter((block) => block && typeof block === 'object');
+}
+
+// Asserts on host events only, never on the model's self-report. Reasons name tools and clauses, never tool_result content.
+function checkIsolation(raw, allowlist) {
+  if (!Array.isArray(raw)) throw new Error('host returned no event stream');
+  const init = raw.find((event) => event && event.type === 'system' && event.subtype === 'init');
+  if (!init) throw new Error('init event missing');
+  const builtin = (plugin) => plugin && typeof plugin === 'object'
+    && (plugin.path === 'builtin' || (typeof plugin.source === 'string' && plugin.source.endsWith('@builtin')));
+  if (!Array.isArray(init.plugins) || !init.plugins.every(builtin)) throw new Error('init lists a non-builtin plugin');
+  for (const key of ['slash_commands', 'skills']) {
+    const list = init[key] === undefined ? [] : init[key];
+    if (!Array.isArray(list) || list.some((name) => typeof name !== 'string' || name.includes(':'))) {
+      throw new Error(`init lists a namespaced user ${key} entry`);
+    }
+  }
+  const results = new Map(messageBlocks(raw, 'user').filter((block) => block.type === 'tool_result')
+    .map((block) => [block.tool_use_id, block]));
+  const uses = messageBlocks(raw, 'assistant').filter((block) => block.type === 'tool_use');
+  const searchNames = allowlist.filter((name) => /notion-search$/.test(name));
+  if (!uses.some((use) => searchNames.includes(use.name) && results.has(use.id) && results.get(use.id).is_error !== true)) {
+    throw new Error('no successful Notion search tool_use (Notion unreachable)');
+  }
+  const denied = new Set(raw.filter((event) => event && event.type === 'result' && Array.isArray(event.permission_denials))
+    .flatMap((event) => event.permission_denials).map((denial) => denial?.tool_use_id));
+  for (const use of uses.filter((u) => typeof u.name === 'string' && /slack/i.test(u.name))) {
+    const result = results.get(use.id);
+    if (result && result.is_error !== true) throw new Error(`Slack tool ${use.name} succeeded`);
+    if (!result && !denied.has(use.id)) throw new Error(`Slack tool ${use.name} was neither denied nor errored`);
+  }
+}
 
 function parseArgs(argv) {
   const options = { timeoutMs: 300000 };
@@ -120,8 +158,8 @@ async function main(argv, {
         if (ms <= 0) throw new Error('check timed out');
         return ms;
       };
-      const ask = async (skill, prompt) => (await runHost({
-        system: twin.composePrompt(dir, skill), prompt, tools: 'none',
+      const ask = async (skill, prompt, tools = 'notion-read') => (await runHost({
+        system: twin.composePrompt(dir, skill), prompt, tools,
         allowedTools: hosts.allowedTools(persona), model: options.model, timeoutMs: remaining(),
       })).text;
       const cli = async (args) => {
@@ -134,7 +172,7 @@ async function main(argv, {
         if (setupError) throw setupError;
         if (index === 0) requireSpec(await ask('spec-answer', specQuestion), true);
         if (index === 1) {
-          if (!checks.checkIdeaReply(await ask('idea-discussion', idea), identity).ok) {
+          if (!checks.checkIdeaReply(await ask('idea-discussion', idea, 'none'), identity).ok) {
             throw new Error('idea reply does not name a sample identity priority');
           }
         }
@@ -174,6 +212,14 @@ async function main(argv, {
           if (options.model !== undefined) args.push('--model', options.model);
           requireSpec(await processRun('claude', args, { cwd: empty, env: pluginEnv, timeoutMs: remaining() }));
         }
+        if (index === 5) {
+          const allowlist = hosts.allowedTools(persona);
+          const { raw } = await runHost({
+            system: 'You are a connectivity probe. Follow the user request literally.', prompt: probe,
+            tools: 'notion-read', allowedTools: allowlist, model: options.model, timeoutMs: remaining(),
+          });
+          checkIsolation(raw, allowlist);
+        }
         passed++;
         io.stdout.write(`PASS ${index + 1} ${name}\n`);
       } catch (error) {
@@ -184,11 +230,11 @@ async function main(argv, {
   } finally {
     if (home) fs.rmSync(home, { recursive: true, force: true });
   }
-  io.stdout.write(`acceptance: ${passed}/5 passed\n`);
-  return passed === 5 ? 0 : 1;
+  io.stdout.write(`acceptance: ${passed}/6 passed\n`);
+  return passed === 6 ? 0 : 1;
 }
 
-module.exports = { main, parseArgs, requireSpec, runProcess };
+module.exports = { main, parseArgs, requireSpec, runProcess, checkIsolation };
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch(() => {
     process.stderr.write('acceptance: temporary directory cleanup failed\n');

@@ -82,6 +82,6 @@ See [docs/formats.md](docs/formats.md) for the plain-file persona, identity, cas
 M2: Claude Code path covers criteria 1–14: harvest, held-out split, build, interview, diagnose, spec answers, idea discussion, shadow, eval, calibration, launch-bar checks, export, privacy and open formats.
 Codex host support is planned for M3.
 
-Run `make verify` for offline syntax and tests. Run `make acceptance` separately for five online checks with the real Claude host and a temporary sample persona; it requires a working, authenticated Claude Code CLI. Online acceptance must pass before claiming the M2 path is accepted.
+Run `make verify` for offline syntax and tests. Run `make acceptance` separately for six online checks with the real Claude host and a temporary sample persona; it requires a working, authenticated Claude Code CLI. Online acceptance must pass before claiming the M2 path is accepted.
 
 MIT. See [LICENSE](LICENSE).
