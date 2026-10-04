@@ -9,7 +9,7 @@ const test = require('node:test');
 const store = require('../lib/store');
 
 const root = path.resolve(__dirname, '..');
-// Every spec §7 persona file and directory; only /sample/persona/ may hold them.
+// Every spec §7 persona file and directory name; data belongs only in /sample/persona/.
 const sensitiveDirectories = ['evals', 'calibration', 'shadow', 'export'];
 const sensitiveFiles = new Set([
   'persona.json', 'pairs.jsonl', 'split.json', 'cases.jsonl', 'interview.jsonl', 'interview-state.json',
@@ -26,7 +26,9 @@ function privacyFindings(repo) {
       if (entry.name === '.git' || entry.name === 'node_modules') continue;
       const target = path.join(dir, entry.name);
       const relative = path.relative(repo, target);
-      if (sensitiveFiles.has(entry.name) && !relative.startsWith(`${sample}${path.sep}`)) {
+      const codeDirectory = entry.isDirectory() && sensitiveDirectories.includes(entry.name)
+        && ['skills', 'templates'].includes(path.relative(repo, dir));
+      if (sensitiveFiles.has(entry.name) && !relative.startsWith(`${sample}${path.sep}`) && !codeDirectory) {
         findings.push(relative);
       }
       if (entry.isDirectory()) walk(target);
@@ -78,6 +80,56 @@ test('privacy walk finds every protected filename including ignored and hidden d
   }
   store.writeText(repo, 'sample/persona-copy/pairs.jsonl', '{}\n', { synthetic: true });
   expected.push(path.join('sample', 'persona-copy', 'pairs.jsonl'));
+  assert.deepEqual(privacyFindings(repo), expected.sort());
+});
+
+test('privacy walk allows protected directory names directly under root skills and templates', (t) => {
+  const repo = temporaryDirectory(t);
+  store.writeJson(path.join(repo, 'sample', 'persona'), 'persona.json', { synthetic: true }, { synthetic: true });
+  for (const parent of ['skills', 'templates']) {
+    for (const directory of sensitiveDirectories) {
+      const file = parent === 'skills' ? 'SKILL.md' : 'README.md';
+      store.writeText(repo, path.join(parent, directory, file), 'Fictional skill or template.', { synthetic: true });
+    }
+  }
+  assert.deepEqual(privacyFindings(repo), []);
+});
+
+test('privacy walk rejects protected filenames directly under root skills and templates', (t) => {
+  const repo = temporaryDirectory(t);
+  store.writeJson(path.join(repo, 'sample', 'persona'), 'persona.json', { synthetic: true }, { synthetic: true });
+  const expected = [];
+  for (const parent of ['skills', 'templates']) {
+    for (const file of sensitiveFiles) {
+      const relative = path.join(parent, file);
+      store.writeText(repo, relative, 'Fictional private fixture.', { synthetic: true });
+      expected.push(relative);
+    }
+  }
+  assert.deepEqual(privacyFindings(repo), expected.sort());
+});
+
+test('privacy walk still finds protected files and deeper or fixture directories', (t) => {
+  const repo = temporaryDirectory(t);
+  store.writeJson(path.join(repo, 'sample', 'persona'), 'persona.json', { synthetic: true }, { synthetic: true });
+  const expected = [];
+  for (const parent of ['skills/export', 'templates/export', 'skills/x/files', 'templates/x', 'test/fixtures/files']) {
+    for (const file of sensitiveFiles) {
+      const relative = path.join(parent, file);
+      store.writeText(repo, relative, 'Fictional private fixture.', { synthetic: true });
+      expected.push(relative);
+    }
+  }
+  for (const parent of [
+    'skills/x', 'templates/x/nested', 'skills/export/nested', 'templates/export/nested',
+    'test/fixtures', 'nested/skills', 'nested/templates',
+  ]) {
+    for (const directory of sensitiveDirectories) {
+      const relative = path.join(parent, directory);
+      fs.mkdirSync(path.join(repo, relative), { recursive: true });
+      expected.push(relative);
+    }
+  }
   assert.deepEqual(privacyFindings(repo), expected.sort());
 });
 
