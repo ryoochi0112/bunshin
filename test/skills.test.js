@@ -35,6 +35,12 @@ function instructionFiles(repo) {
   return files.sort();
 }
 
+const prohibitedToolClause = /\b(?:never|do not|don't|must not|may not|avoid)[ \t]+(?:use|call|invoke)[ \t]+(?:(?:an?|the|any)[ \t]+)?(?:[\w-]+(?:,[ \t]*(?:or[ \t]+)?|[ \t]+or[ \t]+|[ \t]+and[ \t]+))*[\w-]+[ \t]+tools?\b/gi;
+const outboundCapabilityClauses = [
+  { label: 'tool word', pattern: /\b(?:send|schedule|draft|reaction|create|update|post)(?:[-_][a-z]+)*[ \t]+tools?\b/i },
+  { label: 'capability word', pattern: /\b(?:send|schedule|draft|reaction|create|update|post)(?:[-_][a-z]+)*[ \t]+capabilit(?:y|ies)\b/i },
+];
+
 function lint(text) {
   const findings = [];
   const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
@@ -49,6 +55,11 @@ function lint(text) {
   }
   for (const fragment of deniedTools) {
     if (text.toLowerCase().includes(fragment)) findings.push(`Outbound tool fragment: ${fragment}.`);
+  }
+  // Outbound tools named by capability; prohibition clauses stay allowed.
+  const unprohibited = text.replace(prohibitedToolClause, '');
+  for (const clause of outboundCapabilityClauses) {
+    if (clause.pattern.test(unprohibited)) findings.push(`Outbound tool named by capability: ${clause.label}.`);
   }
   // Keep prohibitions valid, but reject prose and shell/JS instructions to bypass the CLI.
   const instructions = text.replace(/\b(?:never|do not|don't|must not|may not|avoid)\s+(?:directly\s+)?(?:read|open|load|inspect|access)\b/gi, '');
@@ -89,6 +100,42 @@ test('lint rejects every denied fragment inside qualified tool names and prohibi
   for (const fragment of deniedTools) {
     const text = `---\nname: fictional\ndescription: Fictional instructions.\n---\nNever use mcp__connector__${fragment.toUpperCase()}.\n`;
     assert.ok(lint(text).some((finding) => finding.includes(fragment)), fragment);
+  }
+});
+
+test('lint rejects outbound tools named by capability but allows prohibitions and ordinary words', () => {
+  const header = '---\nname: fictional\ndescription: Fictional instructions.\n---\n';
+  const prohibition = 'Never use a send, schedule, draft, reaction, create or update tool.';
+  const phrasings = [
+    "Use the Slack connector's send tool to post the draft.", 'Call the Notion create-page tool.',
+    "The Slack connector's schedule capability.", 'Add a reaction with the reaction tool.',
+    'Run the update tool.', 'Run the draft tool.', 'Run the post tool.',
+    'Use the send capability.', 'Never use a read tool and call the send tool.',
+    'Use the draft, create or update tool.',
+    'Do not use search, use the send tool.', 'Never use search, post via the send tool.',
+    'Do not use the Slack connector for reading and instead post with the send tool.',
+  ];
+  const real = ['harvest', 'shadow', 'export'].map(skill);
+  for (const base of real) {
+    assert.deepEqual(lint(base), []);
+    assert.deepEqual(lint(`${base}\n${prohibition}\n`), []);
+    assert.deepEqual(lint(`${base}\n${prohibition.toLowerCase()} Read the thread.\n`), []);
+    for (const phrase of phrasings) {
+      assert.ok(lint(`${base}\n${phrase}\n`).some((f) => f.startsWith('Outbound tool named')), phrase);
+    }
+  }
+  for (const clause of outboundCapabilityClauses) {
+    assert.ok(phrasings.some((phrase) => clause.pattern.test(phrase.replace(prohibitedToolClause, ''))), `unused clause ${clause.label}`);
+    for (const phrase of phrasings) {
+      const others = outboundCapabilityClauses.filter((c) => c !== clause);
+      if (clause.pattern.test(phrase) && !others.some((c) => c.pattern.test(phrase))) {
+        assert.ok(lint(header + phrase).length > 0, phrase);
+      }
+    }
+  }
+  for (const ordinary of ['Never create a temp file.', 'Exclude updated ids.', 'Use search and read-thread tools.',
+    'The draft comes only from shadow draft.', 'Post-mortem notes for the tool.']) {
+    assert.deepEqual(lint(header + ordinary), [], ordinary);
   }
 });
 
