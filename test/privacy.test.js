@@ -9,7 +9,12 @@ const test = require('node:test');
 const store = require('../lib/store');
 
 const root = path.resolve(__dirname, '..');
-const sensitiveFiles = new Set(['persona.json', 'pairs.jsonl', 'interview.jsonl', 'identity.json']);
+// Every spec §7 persona file and directory; only /sample/persona/ may hold them.
+const sensitiveDirectories = ['evals', 'calibration', 'shadow', 'export'];
+const sensitiveFiles = new Set([
+  'persona.json', 'pairs.jsonl', 'split.json', 'cases.jsonl', 'interview.jsonl', 'interview-state.json',
+  'conflicts.jsonl', 'identity.json', 'identity.md', '.identity-transaction.json', ...sensitiveDirectories,
+]);
 
 function privacyFindings(repo) {
   const findings = [];
@@ -66,7 +71,10 @@ test('privacy walk finds every protected filename including ignored and hidden d
     const relative = path.join('.hidden', 'personas', 'x', file);
     store.writeText(repo, relative, 'Fictional private fixture.', { synthetic: true });
     expected.push(relative);
-    store.writeText(repo, path.join('sample', 'persona', file), '{"synthetic":true}\n', { synthetic: true });
+    // A journal in the sample would be an interrupted commit, not a sample file.
+    if (file !== '.identity-transaction.json') {
+      store.writeText(repo, path.join('sample', 'persona', file), '{"synthetic":true}\n', { synthetic: true });
+    }
   }
   store.writeText(repo, 'sample/persona-copy/pairs.jsonl', '{}\n', { synthetic: true });
   expected.push(path.join('sample', 'persona-copy', 'pairs.jsonl'));
@@ -100,7 +108,7 @@ test('privacy walk rejects a missing, malformed or non-synthetic sample manifest
   assert.deepEqual(privacyFindings(repo), [path.join('sample', 'persona', 'persona.json') + ': cannot read synthetic manifest']);
 });
 
-test('gitignore protects private pairs and permits sample pairs despite hostile git environment', (t) => {
+test('gitignore protects every private persona file and permits sample files despite hostile git environment', (t) => {
   const temporary = temporaryDirectory(t);
   const home = path.join(temporary, 'home');
   const xdg = path.join(temporary, 'xdg');
@@ -121,15 +129,18 @@ test('gitignore protects private pairs and permits sample pairs despite hostile 
     GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.excludesFile', GIT_CONFIG_VALUE_0: path.join(decoy, '.gitignore'),
     GIT_CONFIG_PARAMETERS: "'core.excludesFile=/fictional/missing'",
   };
+  const files = (dir) => [...sensitiveFiles].filter((file) => file !== '.identity-transaction.json')
+    .map((file) => (sensitiveDirectories.includes(file) ? `${dir}/${file}/run-1/report.json` : `${dir}/${file}`));
+  // Outside /personas/, so each filename rule is what ignores the path.
+  const privatePaths = [...files('stray/x'), 'stray/x/.identity-transaction.json'];
   for (const environment of [env, hostile]) {
     // --no-index also checks ignore rules after the sample is tracked.
-    const privatePath = 'personas/x/pairs.jsonl';
-    const ignored = git(root, ['check-ignore', '--no-index', '--', privatePath], environment);
+    const ignored = git(root, ['check-ignore', '--no-index', '--', ...privatePaths], environment);
     assert.equal(ignored.error, undefined);
     assert.equal(ignored.status, 0, ignored.stderr);
-    assert.equal(ignored.stdout, `${privatePath}\n`);
+    assert.equal(ignored.stdout, privatePaths.map((file) => `${file}\n`).join(''));
     assert.equal(ignored.stderr, '');
-    const sample = git(root, ['check-ignore', '--no-index', '--', 'sample/persona/pairs.jsonl'], environment);
+    const sample = git(root, ['check-ignore', '--no-index', '--', ...files('sample/persona')], environment);
     assert.equal(sample.error, undefined);
     assert.equal(sample.status, 1, sample.stderr);
     assert.equal(sample.stdout, '');

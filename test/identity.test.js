@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
+const { once } = require('node:events');
 const { Readable } = require('node:stream');
 const test = require('node:test');
 const store = require('../lib/store');
@@ -217,9 +218,68 @@ test('interrupted commit recovers on the next store read and retry increments on
   `, dir, JSON.stringify(draft())], { cwd: path.join(__dirname, '..'), env, encoding: 'utf8' });
   assert.equal(child.status, 73, child.stderr);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'persona.json'), 'utf8')).version, 2);
+  // The dead process's lock is stale, so the next read recovers instead of waiting.
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.identity.lock'), 'utf8')).pid, child.pid);
+  // Recover in a fresh process: its guard cache is empty, as for every CLI call.
+  const reader = spawnSync(process.execPath, ['-e', `
+    process.stdout.write(String(require('./lib/store').readJson(process.argv[1], 'persona.json').version));
+  `, dir], { cwd: path.join(__dirname, '..'), env, encoding: 'utf8' });
+  assert.equal(reader.status, 0, reader.stderr);
+  assert.equal(reader.stdout, '1');
+  assert.equal(fs.existsSync(path.join(dir, '.identity-transaction.json')), false);
+  assert.equal(fs.existsSync(path.join(dir, '.identity.lock')), false);
   assert.equal(store.readJson(dir, 'persona.json').version, 1);
   assert.deepEqual(snapshot(dir), before);
   assert.equal(identity.commit(dir, draft()).version, 2);
+});
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+test('a read in another process during an identity commit waits and never rolls the commit back', async (t) => {
+  const dir = fixture(t);
+  identity.commit(dir, draft());
+  const changed = draft();
+  changed.voice[0].statement = 'Be very concise.';
+  const marker = path.join(dir, '.reader-saw-journal');
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  env.HOME = dir;
+  env.XDG_CONFIG_HOME = dir;
+  let reader;
+  let stdout = '';
+  const original = store.writeText;
+  // Between identity.json and identity.md, start a reader that sees the live journal.
+  t.mock.method(store, 'writeText', (...args) => {
+    if (args[1] === 'identity.md' && !reader) {
+      reader = spawn(process.execPath, ['-e', `
+        const fs = require('node:fs');
+        const path = require('node:path');
+        const store = require('./lib/store');
+        const [dir, marker] = process.argv.slice(1);
+        while (!fs.existsSync(path.join(dir, '.identity-transaction.json'))) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        fs.writeFileSync(marker, '');
+        process.stdout.write(store.readJson(dir, 'identity.json').voice[0].statement);
+      `, dir, marker], { cwd: path.join(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'inherit'] });
+      reader.stdout.on('data', (chunk) => { stdout += chunk; });
+      const deadline = Date.now() + 10000;
+      while (!fs.existsSync(marker) && Date.now() < deadline) sleep(10);
+      assert.equal(fs.existsSync(marker), true);
+      sleep(300);
+    }
+    return original(...args);
+  });
+  assert.equal(identity.commit(dir, changed).version, 2);
+  const [code] = await once(reader, 'close');
+  assert.equal(code, 0);
+  assert.equal(stdout, 'Be very concise.');
+  assert.equal(store.readJson(dir, 'identity.json').voice[0].statement, 'Be very concise.');
+  assert.match(fs.readFileSync(path.join(dir, 'identity.md'), 'utf8'), /Be very concise\./);
+  assert.equal(store.readJson(dir, 'persona.json').version, 2);
+  assert.equal(fs.existsSync(path.join(dir, '.identity-transaction.json')), false);
+  assert.equal(fs.existsSync(path.join(dir, '.identity.lock')), false);
 });
 
 test('pre-commit hooks run before writes and a refusal leaves all files unchanged', (t) => {
