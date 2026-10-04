@@ -6,7 +6,7 @@ user-invocable: true
 
 # Eval
 
-For engine commands, the plugin root is `${CLAUDE_PLUGIN_ROOT}`, or two directories above this file. Use the selected persona consistently through `BUNSHIN_PERSONA` or `--persona <dir>`; otherwise the engine selects the only persona in `BUNSHIN_HOME`. Talk to the user in the user's language. Never write a persona file yourself; the CLI owns every write. Never post or send anything.
+For engine commands, the plugin root is `${CLAUDE_PLUGIN_ROOT}`, or two directories above this file. If the variable is unset, resolve that fallback and set it for the command process. Use the selected persona consistently through `BUNSHIN_PERSONA` or `--persona <dir>`; otherwise the engine selects the only persona in `BUNSHIN_HOME`. Talk to the user in the user's language. Never write a persona file yourself; the CLI owns every write. Never post or send anything.
 
 Read `$ARGUMENTS` for options the user named. Run:
 
