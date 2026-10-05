@@ -1,4 +1,4 @@
-.PHONY: verify syntax test acceptance
+.PHONY: verify syntax test acceptance acceptance-codex
 
 verify: syntax test
 
@@ -17,3 +17,6 @@ test:
 
 acceptance:
 	node scripts/acceptance.js --host claude
+
+acceptance-codex:
+	node scripts/acceptance.js --host codex

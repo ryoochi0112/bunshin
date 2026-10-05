@@ -15,6 +15,11 @@ In Claude Code, add the marketplace and install the plugin:
 
 The CLI needs Node.js. The sample walkthrough below runs from a clone of this repository.
 
+## Codex
+
+Build, eval, shadow with pasted text and export also support Codex using the same private persona directory.
+See [docs/codex.md](docs/codex.md) for local plugin installation, supported commands and the online acceptance run.
+
 ## Privacy boundary
 
 Persona data lives only in `~/bunshin-personas/<name>`, never in the repo.
@@ -81,6 +86,7 @@ See [docs/formats.md](docs/formats.md) for the plain-file persona, identity, cas
 
 M2: Claude Code path covers criteria 1–14: harvest, held-out split, build, interview, diagnose, spec answers, idea discussion, shadow, eval, calibration, launch-bar checks, export, privacy and open formats.
 Codex host support is planned for M3.
+The Codex adapter and plugin are implemented; online Codex acceptance must pass before claiming the M3 path is accepted.
 
 Run `make verify` for offline syntax and tests. Run `make acceptance` separately for six online checks with the real Claude host and a temporary sample persona; it requires a working, authenticated Claude Code CLI. Online acceptance must pass before claiming the M2 path is accepted.
 

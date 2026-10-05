@@ -159,7 +159,7 @@ Each line is a held-out pair copied into the evaluation case shape. The case con
 ### Example: `cases.jsonl`
 
 ```json
-{"id":"sample-10","layer":"judgment","question":{"author":"Neri Moss","text":"Should the search experiment replace the whole navigation?"},"context":[{"author":"Sora Aoki","text":"This is a fictional Tidepool design discussion in a sandbox."}],"reference_answer":"Keep navigation steady while comparing two search labels on the sandbox board. Measure successful lookups, then decide whether a navigation experiment is warranted.","permalink":"https://example.invalid/tidepool/threads/sample-10"}
+{"id":"example-01","layer":"judgment","question":{"author":"Lena Shell","text":"Should we add a sound when a Tidepool sandbox task finishes?"},"context":[{"author":"Oren Reed","text":"The fictional Tidepool sandbox has a silent task status panel."}],"reference_answer":"Make the sound optional. Test it with sandbox volunteers and check whether it helps them notice completed tasks without interrupting their work.","permalink":"https://example.invalid/tidepool/threads/example-01"}
 ```
 
 ## Interview answer: `interview.jsonl`

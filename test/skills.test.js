@@ -7,6 +7,9 @@ const path = require('node:path');
 const test = require('node:test');
 
 const root = path.join(__dirname, '..');
+const engineRoot = 'For engine commands, the plugin root is `${CLAUDE_PLUGIN_ROOT}`, or two directories above this file.';
+const engineFallback = 'If the variable is unset, resolve that fallback and set it for the command process.';
+const portableSkills = ['build', 'eval', 'shadow', 'export'];
 const operatorSkills = ['harvest', 'interview', 'diagnose', 'build'];
 const deniedTools = [
   'send_message', 'schedule_message', 'send_message_draft', 'add_reaction',
@@ -41,8 +44,14 @@ const outboundCapabilityClauses = [
   { label: 'capability word', pattern: /\b(?:send|schedule|draft|reaction|create|update|post)(?:[-_][a-z]+)*[ \t]+capabilit(?:y|ies)\b/i },
 ];
 
-function lint(text) {
+function lint(text, name) {
   const findings = [];
+  if (name) {
+    if (!text.includes(`${engineRoot} ${engineFallback}`)) findings.push('Missing host-neutral engine resolution.');
+    if (portableSkills.includes(name) && /Task tool|AskUserQuestion/i.test(text)) {
+      findings.push('Claude-only instruction.');
+    }
+  }
   const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   for (const field of ['name', 'description']) {
     const match = frontmatter && frontmatter[1].match(new RegExp(`^${field}:[ \\t]*([^\\r\\n]*)$`, 'm'));
@@ -172,9 +181,46 @@ test('discovery includes later skills and recursively nested Markdown templates'
 test('every skill and Markdown template passes the safety lint', () => {
   const files = instructionFiles(root);
   assert.ok(files.length > 0);
-  const findings = files.flatMap((file) => lint(fs.readFileSync(file, 'utf8'))
+  const findings = files.flatMap((file) => lint(fs.readFileSync(file, 'utf8'),
+    path.basename(file) === 'SKILL.md' ? path.basename(path.dirname(file)) : undefined)
     .map((finding) => `${path.relative(root, file)}: ${finding}`));
   assert.deepEqual(findings, []);
+});
+
+test('host lint rejects removal of either engine clause and Claude-only instructions', () => {
+  const names = instructionFiles(root).filter((file) => path.basename(file) === 'SKILL.md')
+    .map((file) => path.basename(path.dirname(file)));
+  assert.deepEqual(names, ['build', 'calibrate', 'diagnose', 'eval', 'export', 'harvest',
+    'idea-discussion', 'interview', 'shadow', 'spec-answer']);
+  for (const name of names) {
+    const text = skill(name);
+    assert.deepEqual(lint(text, name), [], name);
+    for (const clause of [engineRoot, engineFallback]) {
+      assert.deepEqual(lint(text.replace(clause, ''), name), ['Missing host-neutral engine resolution.'],
+        `${name}: removing ${clause}`);
+    }
+  }
+  for (const name of portableSkills) {
+    for (const instruction of ['Use the Task tool.', 'Call AskUserQuestion.']) {
+      assert.deepEqual(lint(`${skill(name)}\n${instruction}`, name), ['Claude-only instruction.']);
+    }
+  }
+});
+
+test('harvest first checks the host before resolving fallback or using any connector', () => {
+  const text = skill('harvest');
+  const gate = 'First, before resolving the engine fallback or doing anything else, check whether `CODEX_THREAD_ID` or `CODEX_SESSION_ID` is set, or you otherwise know this host is outside Claude Code. Dispatcher shell-environment measurements on 2026-10-05 (codex-cli 0.159.0) found both Codex session variables set inside `codex exec`, while a Claude Code shell had `CLAUDECODE` set and no `CLAUDE_PLUGIN_ROOT`; inherited `CLAUDE_*` variables do not prove the host is Claude Code. If either Codex session variable is set or this host is otherwise known to be outside Claude Code, stop immediately and reply with only one sentence: "Harvest runs on Claude Code." Stop regardless of `${CLAUDE_PLUGIN_ROOT}` or Slack connector availability; do not try another route.';
+  function assertGate(value) {
+    const first = value.split('# Harvest\n\n')[1].split('\n\n')[0];
+    assert.equal(first, gate);
+    assert.ok(value.indexOf(first) < value.indexOf(engineRoot));
+  }
+  assertGate(text);
+  for (const required of ['`CODEX_THREAD_ID`', '`CODEX_SESSION_ID`',
+    '"Harvest runs on Claude Code."', 'Stop regardless of `${CLAUDE_PLUGIN_ROOT}` or Slack connector availability; do not try another route.']) {
+    assert.throws(() => assertGate(text.replace(required, '')), assert.AssertionError,
+      `Removing ${required} must fail the host guard.`);
+  }
 });
 
 test('all ten skills are user-invocable and follow the M2 engine conventions', () => {
@@ -278,6 +324,8 @@ test('calibrate pins sampling, owner-only ratings, the blinded loop and final sc
 
 test('export pins the CLI, package path and both load instructions without installing', () => {
   const text = skill('export');
+  assert.doesNotMatch(text, /~\/\.agents\/skills\//);
+  assert.match(text, /For Claude Code, give the owner these two load instructions/);
   pinCommand(text, 'node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" export', 'export');
   pinClauses(text, 'export', [
     ['out option forwarding', /Append `--out <dir>` only when the user named it\./],
@@ -373,7 +421,7 @@ test('shadow outbound offer guard rejects added offers while allowing the prohib
 
 test('harvest pins scope, owner authorship, thread boundaries, ingestion and label correction', () => {
   rules('harvest', [
-    ['host restriction', /harvest runs on Claude Code only/i],
+    ['host restriction', /harvest runs on Claude Code/i],
     ['unsupported host stops', /(?:on Codex|outside Claude Code).*stop/i],
     ['missing scope', /ask.*channels.*date range.*missing/i],
     ['connector capabilities', /only the Slack connector's search and read-thread tools/],

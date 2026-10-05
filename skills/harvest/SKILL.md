@@ -6,7 +6,7 @@ user-invocable: true
 
 # Harvest
 
-Harvest runs on Claude Code only. On Codex or outside Claude Code, stop and tell the user to invoke `/bunshin:harvest` in Claude Code.
+First, before resolving the engine fallback or doing anything else, check whether `CODEX_THREAD_ID` or `CODEX_SESSION_ID` is set, or you otherwise know this host is outside Claude Code. Dispatcher shell-environment measurements on 2026-10-05 (codex-cli 0.159.0) found both Codex session variables set inside `codex exec`, while a Claude Code shell had `CLAUDECODE` set and no `CLAUDE_PLUGIN_ROOT`; inherited `CLAUDE_*` variables do not prove the host is Claude Code. If either Codex session variable is set or this host is otherwise known to be outside Claude Code, stop immediately and reply with only one sentence: "Harvest runs on Claude Code." Stop regardless of `${CLAUDE_PLUGIN_ROOT}` or Slack connector availability; do not try another route.
 
 For engine commands, the plugin root is `${CLAUDE_PLUGIN_ROOT}`, or two directories above this file. If the variable is unset, resolve that fallback and set it for the command process. Use the selected persona consistently through `BUNSHIN_PERSONA` or `--persona <dir>`; the engine otherwise selects the only persona in `BUNSHIN_HOME`. Talk to the user in the user's language. Never write a persona file yourself; the CLI owns every write. Never post or send anything.
 

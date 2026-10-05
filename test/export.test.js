@@ -8,6 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 const check = require('../lib/check');
 const guard = require('../lib/guard');
+const identity = require('../lib/identity');
 const leak = require('../lib/leak');
 const store = require('../lib/store');
 const twin = require('../lib/twin');
@@ -191,6 +192,29 @@ test('check receives all staged files and leak scan covers every non-owner messa
   assertNoStage(dir);
 });
 
+test('committed colleague-message window refuses export with exactly the identity filenames and pair id', (t) => {
+  const dir = fixture(t);
+  const value = store.readJson(dir, 'identity.json');
+  const pair = store.readJsonl(dir, 'pairs.jsonl').find(({ id }) => id === 'sample-14');
+  value.priorities.push({
+    id: 'p-settings', name: 'Settings grouping',
+    statement: 'Use a separate settings page when related settings need consideration together.',
+    evidence: [{ type: 'pair', ref: pair.id, permalink: pair.permalink }],
+  });
+  assert.equal(identity.validate(dir, value).ok, true);
+  store.writeJson(dir, 'identity.json', value);
+  store.writeText(dir, 'identity.md', identity.render({
+    ...value, display_name: store.readJson(dir, 'persona.json').display_name,
+  }));
+  const out = path.join(path.dirname(dir), 'colleague-window-package');
+  assert.throws(() => exportPersona(dir, out), (error) => {
+    assert.equal(error.message, 'identity.json (sample-14)\nidentity.md (sample-14)');
+    return true;
+  });
+  assert.equal(fs.existsSync(out), false);
+  assertNoStage(dir);
+});
+
 test('sample exports, then a colleague sentence seeded into identity fails with only filenames and pair id', async (t) => {
   const dir = fixture(t);
   exportPersona(dir, path.join(path.dirname(dir), 'clean-package'));
@@ -201,8 +225,7 @@ test('sample exports, then a colleague sentence seeded into identity fails with 
   assert.equal(result.code, 1);
   assert.equal(result.stdout, '');
   assert.match(result.stderr, new RegExp(`identity\\.md \\(${pair.id}\\)`));
-  assert.match(result.stderr, /skills\/spec-answer\/SKILL\.md/);
-  assert.match(result.stderr, /skills\/idea-discussion\/SKILL\.md/);
+  assert.equal(result.stderr, `identity.md (${pair.id})\n`);
   for (const line of result.stderr.trim().split('\n')) assert.match(line, /^[\w./-]+ \([a-z0-9-]+\)$/);
   assert.ok(!result.stderr.includes(pair.question.text));
   assert.equal(fs.existsSync(out), false);
