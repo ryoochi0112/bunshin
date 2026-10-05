@@ -133,6 +133,106 @@ test('check CLI passes a clean persona with a fixed success line and writes no f
   assert.deepEqual(snapshot(dir), before);
 });
 
+for (const source of [
+  {
+    name: 'colleague question window', id: 'sample-14', trait: 'p-settings', section: 'priorities',
+    message: 'Colleague message window.',
+    statement: () => 'Use a separate settings page when related settings need consideration together.',
+  },
+  {
+    name: 'colleague context window', id: 'sample-14', trait: 'p-context', section: 'priorities',
+    message: 'Colleague message window.',
+    statement: (dir) => {
+      const records = store.readJsonl(dir, 'pairs.jsonl');
+      records.find(({ id }) => id === 'sample-14').context.push({
+        author: 'Fictional Colleague', text: 'Should a fictional lantern workflow use a distinct confirmation screen?',
+      });
+      store.writeJsonl(dir, 'pairs.jsonl', records);
+      return 'Prefer a distinct confirmation screen when a workflow has several steps.';
+    },
+  },
+  {
+    name: 'full owner answer', id: 'sample-14', trait: 'voice-answer', section: 'voice',
+    message: 'Verbatim private text.',
+    statement: (dir) => store.readJsonl(dir, 'pairs.jsonl').find(({ id }) => id === 'sample-14').answer.text,
+  },
+  {
+    name: 'full interview answer', id: 'iv-0002', trait: 'context-interview', section: 'context_rules',
+    message: 'Verbatim private text.',
+    statement: (dir) => store.readJsonl(dir, 'interview.jsonl').find(({ id }) => id === 'iv-0002').answer,
+  },
+]) {
+  for (const method of ['checkDraft', 'runChecks']) {
+    test(`${method} refuses a ${source.name} and names the matching trait`, (t) => {
+      const dir = fixture(t);
+      fs.cpSync(path.join(__dirname, '..', 'sample', 'persona'), dir, { recursive: true });
+      assert.equal(check.runChecks(dir).ok, true);
+      const value = store.readJson(dir, 'identity.json');
+      const statement = source.statement(dir);
+      value[source.section].push({
+        id: source.trait, name: 'Fictional priority', statement,
+        evidence: source.id.startsWith('iv-') ? [{ type: 'interview', ref: source.id }] : [{
+          type: 'pair', ref: source.id, permalink: `https://example.invalid/tidepool/threads/${source.id}`,
+        }],
+      });
+      assert.equal(identity.validate(dir, value).ok, true);
+      let findings;
+      if (method === 'checkDraft') {
+        const before = snapshot(dir);
+        assert.throws(() => check.checkDraft(dir, value), (error) => {
+          findings = error.findings;
+          assert.equal(error.message, check.formatFindings(findings));
+          return true;
+        });
+        assert.deepEqual(snapshot(dir), before);
+      } else {
+        store.writeJson(dir, 'identity.json', value);
+        store.writeText(dir, 'identity.md', identity.render({
+          ...value, display_name: store.readJson(dir, 'persona.json').display_name,
+        }));
+        const result = check.runChecks(dir);
+        assert.equal(result.ok, false);
+        findings = result.findings;
+      }
+      assert.deepEqual(findings.map(({ name, id }) => ({ name, id })), [
+        { name: 'identity.json', id: source.id }, { name: 'identity.md', id: source.id },
+      ]);
+      for (const finding of findings) {
+        assert.ok(finding.message.includes(source.message), 'The finding must name the privacy rule.');
+        assert.ok(finding.message.includes(`trait ${source.trait}`), 'The finding must name the matching trait.');
+      }
+      const formatted = check.formatFindings(findings);
+      assert.ok(formatted.includes(`trait ${source.trait}`));
+      assert.ok(!formatted.includes(statement), 'Refusals must omit private text.');
+    });
+  }
+}
+
+test('full held-out answers are reported once per file', (t) => {
+  const dir = fixture(t);
+  const value = draft();
+  value.voice[0].statement = store.readJsonl(dir, 'pairs.jsonl')[1].answer.text;
+  assert.throws(() => check.checkDraft(dir, value), (error) => {
+    assert.deepEqual(error.findings.map(({ name, id }) => ({ name, id })), [
+      { name: 'identity.json', id: 'heldout-one' }, { name: 'identity.md', id: 'heldout-one' },
+    ]);
+    assert.ok(error.findings.every(({ message }) => message.startsWith('Held-out answer window.')));
+    return true;
+  });
+  store.writeJson(dir, 'identity.json', value);
+  store.writeText(dir, 'identity.md', identity.render(value));
+  assert.equal(check.runChecks(dir).findings.length, 2);
+});
+
+test('checks preserve text-free interview references while export collection validates answer metadata', (t) => {
+  const dir = fixture(t);
+  store.writeJsonl(dir, 'interview.jsonl', [{ id: 'iv-0001' }]);
+  assert.throws(() => check.privateTexts(dir, store.readJson(dir, 'persona.json')),
+    /^Error: Invalid interview answer in interview\.jsonl\.$/);
+  assert.deepEqual(check.checkDraft(dir, draft()), { ok: true, findings: [] });
+  assert.deepEqual(check.runChecks(dir), { ok: true, findings: [] });
+});
+
 test('check CLI refuses held-out evidence in identity traits', async (t) => {
   const dir = fixture(t);
   const value = draft();
