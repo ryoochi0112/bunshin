@@ -108,12 +108,30 @@ test('format tables contain every exported field list', () => {
   }
 });
 
-test('JSON examples parse, match the fictional sample, and pass their validators', () => {
+test('format docs contain no sample held-out questions or answers', () => {
+  const split = store.readJson(sampleDir, 'split.json');
+  const samplePairs = store.readJsonl(sampleDir, 'pairs.jsonl');
+  const cases = store.readJsonl(sampleDir, 'cases.jsonl');
+
+  for (const pair of samplePairs.filter((row) => split.assignments[row.id] === 'heldout')) {
+    const heldoutCase = cases.find((row) => row.id === pair.id);
+    assert.ok(heldoutCase, `Missing case for ${pair.id}`);
+    for (const [field, text] of [
+      ['question.text', pair.question.text],
+      ['answer.text', pair.answer.text],
+      ['reference_answer', heldoutCase.reference_answer],
+    ]) {
+      assert.equal(formats.includes(text), false, `${pair.id} ${field} must not appear in docs/formats.md`);
+    }
+  }
+});
+
+test('JSON examples parse, match the sample except for the fictional case, and pass their validators', () => {
   const examples = [
     ['persona.json', store.readJson(sampleDir, 'persona.json'), validateManifest],
     ['pairs.jsonl', store.readJsonl(sampleDir, 'pairs.jsonl')[0], pairs.validatePair],
     ['split.json', store.readJson(sampleDir, 'split.json'), validateSplit],
-    ['cases.jsonl', store.readJsonl(sampleDir, 'cases.jsonl')[0], validateCase],
+    ['cases.jsonl', null, validateCase],
     ['interview.jsonl', store.readJsonl(sampleDir, 'interview.jsonl')[0], interview.validateAnswer],
     ['conflicts.jsonl', store.readJsonl(sampleDir, 'conflicts.jsonl')[0], conflicts.validateConflict],
     ['identity.json', store.readJson(sampleDir, 'identity.json'), (value) => identity.validate(sampleDir, value)],
@@ -122,7 +140,12 @@ test('JSON examples parse, match the fictional sample, and pass their validators
   assert.equal([...formats.matchAll(/```json\s*\n/g)].length, examples.length + 6);
   for (const [file, sampleValue, validator] of examples) {
     const value = documentedExample(file);
-    assert.deepEqual(value, sampleValue, `${file} example must come from sample/persona`);
+    if (file === 'cases.jsonl') {
+      const split = store.readJson(sampleDir, 'split.json');
+      assert.equal(Object.hasOwn(split.assignments, value.id), false, 'Case example id must not be in the sample split');
+    } else {
+      assert.deepEqual(value, sampleValue, `${file} example must come from sample/persona`);
+    }
     assertValid(validator(value), file);
   }
 });
