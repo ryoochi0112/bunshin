@@ -33,7 +33,7 @@ function capture() {
 
 test('README sections, installation and whole limit sentences are pinned', () => {
   assert.deepEqual([...readme.matchAll(/^## (.+)$/gm)].map((match) => match[1]), [
-    'What it is', 'Install', 'Privacy boundary', '5-minute sample path', 'Your own persona', 'Formats', 'Status',
+    'What it is', 'Install', 'Codex', 'Privacy boundary', '5-minute sample path', 'Your own persona', 'Formats', 'Status',
   ]);
   const lines = readme.split('\n');
   for (const sentence of [
@@ -51,7 +51,7 @@ test('README sections, installation and whole limit sentences are pinned', () =>
     'Two judge replies are deliberately invalid, counted as `judge_error` and excluded from rates.',
     'A real launch-bar claim needs about 100 pairs (at least 34 per layer at the default 0.3 held-out ratio).',
     'bunshin never posts or sends anything.',
-    'Codex host support is planned for M3.',
+    'See [docs/codex.md](docs/codex.md) for local plugin installation, supported commands and the online acceptance run.',
     'M2: Claude Code path covers criteria 1–14: harvest, held-out split, build, interview, diagnose, spec answers, idea discussion, shadow, eval, calibration, launch-bar checks, export, privacy and open formats.',
   ]) assert.ok(lines.includes(sentence), `Missing complete line: ${sentence}`);
 });
@@ -106,19 +106,20 @@ test('sample walkthrough commands also work in process', async (t) => {
 });
 
 test('acceptance usage rejects other hosts end to end without a model call', () => {
-  const result = spawnSync(process.execPath, ['scripts/acceptance.js', '--host', 'codex'], {
+  const result = spawnSync(process.execPath, ['scripts/acceptance.js', '--host', 'unsupported'], {
     cwd: root, encoding: 'utf8', timeout: 10000,
   });
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /^Usage: node scripts\/acceptance\.js --host claude/);
+  assert.match(result.stderr, /^Usage: node scripts\/acceptance\.js --host claude\|codex/);
 });
 
 test('Makefile keeps online acceptance separate from verify', () => {
   const makefile = fs.readFileSync(path.join(root, 'Makefile'), 'utf8');
+  assert.match(makefile, /^acceptance-codex:\n\tnode scripts\/acceptance\.js --host codex$/m);
   assert.match(makefile, /^verify: syntax test$/m);
   assert.match(makefile, /^acceptance:\n\tnode scripts\/acceptance\.js --host claude$/m);
-  assert.match(makefile, /^\.PHONY: verify syntax test acceptance$/m);
+  assert.match(makefile, /^\.PHONY: verify syntax test acceptance acceptance-codex$/m);
 });
 
 test('acceptance argument validation rejects malformed and duplicate values', async () => {
