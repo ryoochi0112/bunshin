@@ -326,6 +326,18 @@ test('init refuses invalid names and argument counts before writing', async (t) 
   assert.deepEqual(fs.readdirSync(home), []);
 });
 
+test('init treats --help and names with a leading hyphen as usage errors without creating a directory', async (t) => {
+  const home = path.join(temporaryDirectory(t), 'home');
+  for (const args of [['--help'], ['-h'], ['-x'], ['-sample-person'], ['--sample', '--name', '--help'], ['--sample', '--name', '-x']]) {
+    const output = createIo({ BUNSHIN_HOME: home });
+    assert.equal(await main(['init', ...args], output.io), 2);
+    assert.match(output.read().stderr, /Usage: bunshin init/);
+    assert.equal(output.read().stdout, '');
+    assert.equal(output.probeCalls(), 0);
+  }
+  assert.ok(!fs.existsSync(home));
+});
+
 for (const verdict of ['public', 'unknown']) {
   test(`init refuses ${verdict} remotes before any write`, async (t) => {
     const repo = createRepo(temporaryDirectory(t));

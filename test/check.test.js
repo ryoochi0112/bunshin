@@ -549,6 +549,17 @@ test('draft checks refuse unreadable or malformed sources with content-free mess
   }
 });
 
+test('checks refuse manifest names that do not start with a letter or digit', (t) => {
+  for (const name of ['--help', '-h', '-sample']) {
+    const dir = fixture(t);
+    store.writeJson(dir, 'persona.json', { ...store.readJson(dir, 'persona.json'), name }, { synthetic: true });
+    assert.deepEqual(check.runChecks(dir), {
+      ok: false, findings: [{ name: 'persona.json', message: 'Cannot read persona manifest.' }],
+    });
+    assert.throws(() => check.checkDraft(dir, draft()), /persona\.json.*Cannot read persona manifest\./);
+  }
+});
+
 test('draft checks refuse unparseable evidence and candidate serialization', (t) => {
   const dir = fixture(t);
   for (const evidence of [null, { type: 'unknown', ref: 'Private sample text.' }, { type: 'pair', ref: 'Private sample text.' }]) {
