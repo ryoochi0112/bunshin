@@ -396,6 +396,28 @@ test('AC3: every judge call carries the full example block in system text and no
   for (const call of draftCalls) for (const marker of markers) assert.ok(!call.system.includes(marker), marker);
 });
 
+test('AC3: owner reasons set through examples rate reach every judge system exactly once', async (t) => {
+  const dir = fixture(t);
+  const { rows } = writeExamples(dir, 9);
+  const markers = ['REASON-MARK-A', 'REASON-MARK-B', 'REASON-MARK-C'];
+  rows.slice(9).forEach((row, i) => {
+    const result = spawnSync(process.execPath, [path.join(root, 'bin', 'bunshin.js'), 'examples', 'rate', row.pair_id, labels[(9 + i) % 3],
+      '--reason', markers[i], '--persona', dir], { cwd: root, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  });
+  const adapters = recording();
+  await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters });
+  const judgeCalls = adapters.calls.filter((call) => call.tools === 'none');
+  assert.ok(judgeCalls.length >= 3);
+  for (const call of judgeCalls) {
+    for (const [i, marker] of markers.entries()) {
+      assert.equal(call.system.split(marker).length - 1, 1, marker);
+      assert.ok(call.system.includes(`Owner rating: ${labels[(9 + i) % 3]}\nOwner reason: ${marker}`), marker);
+    }
+    assert.equal(call.system.split('Owner reason:').length - 1, 3);
+  }
+});
+
 function verdict(rating, wrong) {
   return { rating, reason: `Reason ${rating} ${wrong}.`, wrong_uncited: wrong, language_match: wrong === 0,
     claims: Array.from({ length: wrong }, (_, i) => ({ text: `Wrong ${i}.`, cited: false, correct: false })) };

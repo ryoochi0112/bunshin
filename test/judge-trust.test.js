@@ -286,6 +286,38 @@ test('examplesBlock renders only the five fields per example', () => {
   for (const leak of ['PAIRID', 'PERMA', 'pair_id', 'permalink', '2020-01-01', 'DRAFTEDAT', 'DRAFTERX', 'LAYERX']) assert.ok(!block.includes(leak), leak);
 });
 
+const twelveRows = (reasons = {}) => Array.from({ length: 12 }, (_, i) => ({ position: i + 1, pair_id: `P${i + 1}`,
+  question: { author: 'asker', text: `Q${i + 1}` }, context: [{ author: 'ann', text: `C${i + 1}` }], reference_answer: `R${i + 1}`,
+  draft: `D${i + 1}`, rating: ['send_as_is', 'needs_edits', 'wrong'][i % 3], reason: reasons[i + 1] ?? null }));
+
+test('AC4: a reason is the line directly after the Owner rating line', () => {
+  const reason = 'answers the 3/1 deadline, the thread moved it to 3/8';
+  const row = { ...twelveRows()[1], draft: 'DRAFT', reason };
+  assert.ok(judge.examplesBlock([row]).endsWith(`Draft:\nDRAFT\n\nOwner rating: needs_edits\nOwner reason: ${reason}`));
+});
+
+test('AC3: 3 reasons add exactly 3 lines; stripping them gives the reason-free block byte for byte', () => {
+  const reasons = { 2: 'REASON-A', 5: 'REASON-B', 11: 'REASON-C' };
+  const block = judge.examplesBlock(twelveRows(reasons));
+  assert.equal(block.split('Owner reason:').length - 1, 3);
+  const lines = block.split('\n');
+  for (const [pos, marker] of Object.entries(reasons)) {
+    assert.equal(block.split(marker).length - 1, 1, marker);
+    const at = lines.indexOf(`Owner reason: ${marker}`);
+    assert.ok(at > 0 && lines[at - 1].startsWith('Owner rating: '), marker);
+    assert.ok(lines.slice(0, at).filter((l) => l.startsWith('## Example ')).pop() === `## Example ${pos}`);
+  }
+  assert.equal(lines.filter((l) => !l.startsWith('Owner reason: ')).join('\n'), judge.examplesBlock(twelveRows()));
+});
+
+test('empty, null or absent reasons render nothing', () => {
+  const base = judge.examplesBlock(twelveRows());
+  const rows = twelveRows();
+  rows[0].reason = ''; delete rows[1].reason; rows[2].reason = null;
+  assert.equal(judge.examplesBlock(rows), base);
+  assert.ok(!base.includes('Owner reason'));
+});
+
 test('examplesBlock orders by position without mutating the input', () => {
   const reversed = exampleRows().reverse();
   const block = judge.examplesBlock(reversed);
