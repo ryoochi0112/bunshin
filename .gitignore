@@ -1,6 +1,7 @@
 node_modules/
 /personas/
 /bunshin-personas/
+/.claude/
 
 persona.json
 pairs.jsonl
