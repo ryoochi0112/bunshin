@@ -345,3 +345,197 @@ test('next serves unrated items before re-passes, and a bare re-rating needs the
   await exec(home, ['rate', rows[2].pair_id, 'wrong']);
   assert.match((await exec(home, ['next'])).stdout, new RegExp(`^item 3/12 `));
 });
+
+// ---- balance ----
+const OLD = '2026-01-01T00:00:00.000Z';
+const body = (row) => `\n\n## Question\n${row.question.text}\n\n## Twin draft\n${row.draft}\n\n## Reference answer\n${row.reference_answer}\n`;
+const setFile = (dir, name) => path.join(dir, examples.DIR, name);
+const snapshot = (dir) => Object.fromEntries(fs.readdirSync(path.join(dir, examples.DIR)).sort()
+  .map((name) => [name, fs.readFileSync(setFile(dir, name)).toString()]));
+
+// spec: 12 entries [rating, reason]; reason null = --no-reason row, string = reasoned row.
+async function ratedSet(t, spec, pool = 0) {
+  const ctx = fixture(t);
+  if (pool) growBuildPool(ctx.dir, pool);
+  await exec(ctx.home, ['sample', '--drafter', 'fake'], recording());
+  const rows = examples.readSet(ctx.dir).examples;
+  spec.forEach(([rating, reason], i) => store.appendJsonl(ctx.dir, `${examples.DIR}/ratings.jsonl`,
+    { pair_id: rows[i].pair_id, rating, reason, rated_at: OLD }));
+  return { ...ctx, rows };
+}
+const plain = (rating, reason = null) => [rating, reason];
+const S0 = plain('send_as_is');
+
+test('balance refuses an unrated or undrafted set and writes no file', async (t) => {
+  const { home, dir } = fixture(t);
+  await exec(home, ['sample', '--n', '2', '--drafter', 'fake'], recording());
+  let result = await exec(home, ['balance']);
+  assert.deepEqual([result.code, result.stdout, result.stderr], [1, '', 'examples: rate all items before balance\n']);
+  assert.equal(fs.existsSync(setFile(dir, 'balance.json')), false);
+  const second = fixture(t);
+  await exec(second.home, ['sample', '--drafter', 'fake'], recording());
+  result = await exec(second.home, ['balance']);
+  assert.equal(result.stderr, 'examples: rate all items before balance\n');
+  assert.equal(fs.existsSync(setFile(second.dir, 'balance.json')), false);
+});
+
+test('balance creates balance.json once, prints the status line, and is idempotent', async (t) => {
+  const { home, dir } = await ratedSet(t, Array(12).fill(S0), 4);
+  const first = await exec(home, ['balance']);
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(first.stdout, 'examples: balancing — extras 0 of 24 rated · needs_edits with reason 0 of 6 · send_as_is with reason 0\n');
+  const balance = store.readJson(dir, 'judge-examples/balance.json');
+  assert.deepEqual(Object.keys(balance), ['format_version', 'seed', 'started_at']);
+  assert.match(balance.seed, /^[a-f0-9]{16}$/);
+  const before = snapshot(dir);
+  const second = await exec(home, ['balance']);
+  assert.equal(second.stdout, first.stdout);
+  assert.deepEqual(snapshot(dir), before);
+  assert.equal((await exec(home, ['status'])).stdout, first.stdout);
+});
+
+test('status without a balance keeps today\'s line', async (t) => {
+  const { home } = await ratedSet(t, Array(12).fill(S0));
+  assert.equal((await exec(home, ['status'])).stdout, 'examples: 12/12 drafted · 12/12 rated (send_as_is 12 · needs_edits 0 · wrong 0)\n');
+  assert.equal((await exec(home, ['next'])).stdout, 'examples: all 12 items rated — run eval run\n');
+});
+
+test('next drafts extras on demand, re-serves unrated ones without a call, and rate accepts extra ids', async (t) => {
+  const { home, dir } = await ratedSet(t, Array(12).fill(S0), 8);
+  await exec(home, ['balance']);
+  const adapters = recording();
+  const outs = [];
+  for (let i = 0; i < 3; i++) {
+    const result = await exec(home, ['next'], adapters);
+    assert.equal(result.code, 0, result.stderr);
+    const row = examples.readSet(dir).extras[i];
+    assert.equal(result.stdout, `item ${13 + i} — ${row.pair_id} (${row.layer})${body(row)}`);
+    outs.push(result.stdout);
+    assert.equal(adapters.calls.length, i + 1);
+    if (i < 2) {
+      const rated = await exec(home, ['rate', row.pair_id, 'needs_edits', '--reason', 'r'], adapters);
+      assert.equal(rated.code, 0, rated.stderr);
+    }
+  }
+  assert.equal(adapters.calls.length, 3);
+  assert.equal((await exec(home, ['next'], adapters)).stdout, outs[2]);
+  assert.equal(adapters.calls.length, 3);
+  const state = examples.readSet(dir);
+  const ids = state.extras.map((row) => row.pair_id);
+  assert.equal(new Set(ids).size, 3);
+  for (const id of ids) {
+    assert.ok(!state.set.pair_ids.includes(id));
+    assert.equal(store.readJson(dir, 'split.json').assignments[id], 'build');
+  }
+  for (const call of adapters.calls) assert.equal(call.tools, 'notion-read');
+  state.extras.forEach((row, i) => {
+    assert.equal(adapters.calls[i].system, twin.composePrompt(dir, twin.skillForLayer(row.layer)));
+    assert.equal(adapters.calls[i].prompt, judge.questionPrompt({ question: row.question, context: row.context }));
+  });
+  assert.equal((await exec(home, ['rate', 'sample-10', 'wrong'])).stderr, 'examples: sample-10 is not in the example set\n');
+});
+
+test('a host error while drafting an extra appends nothing and prints the resume hint', async (t) => {
+  const { home, dir } = await ratedSet(t, Array(12).fill(S0), 4);
+  await exec(home, ['balance']);
+  const failing = await exec(home, ['next'], recording({ failOn: 1 }));
+  assert.equal(failing.code, 1);
+  assert.equal(fs.existsSync(setFile(dir, 'extras.jsonl')), false);
+  const pairId = examples.readSet(dir).balance.serve.pair.id;
+  assert.equal(failing.stderr, `examples: host error on pair ${pairId} (fake); rerun examples next to resume\n`);
+  await exec(home, ['next'], recording());
+  const before = fs.readFileSync(setFile(dir, 'extras.jsonl'));
+  const second = await exec(home, ['rate', pairId, 'wrong', '--no-reason']);
+  assert.equal(second.code, 0);
+  const again = await exec(home, ['next'], recording({ failOn: 1 }));
+  assert.equal(again.code, 1);
+  assert.deepEqual(fs.readFileSync(setFile(dir, 'extras.jsonl')), before);
+});
+
+async function serveExtras(home, count, ratingFor) {
+  const adapters = recording();
+  for (let i = 0; i < count; i++) {
+    const result = await exec(home, ['next'], adapters);
+    assert.match(result.stdout, new RegExp(`^item ${13 + i} — `), `extra ${i + 1}: ${result.stdout.slice(0, 60)}`);
+    const id = result.stdout.match(/^item \d+ — (\S+) /)[1];
+    const [rating, reason] = ratingFor(i);
+    await exec(home, ['rate', id, rating, ...(reason ? ['--reason', reason] : ['--no-reason'])], adapters);
+  }
+  return adapters;
+}
+
+test('quota stop: the rating that makes the 6th N ends extras and next serves a top-up item', async (t) => {
+  const spec = [plain('needs_edits', 'a'), plain('needs_edits', 'b'), ...Array(10).fill(S0)];
+  const { home, rows } = await ratedSet(t, spec, 26);
+  await exec(home, ['balance']);
+  const adapters = await serveExtras(home, 4, () => ['needs_edits', 'why']);
+  assert.equal(adapters.calls.length, 4);
+  const next = await exec(home, ['next'], adapters);
+  assert.equal(next.stdout, `item 3/12 — ${rows[2].pair_id} (${rows[2].layer})${body(rows[2])}`);
+  assert.equal(adapters.calls.length, 4);
+});
+
+test('cap stop: 24 rated extras with 4 N end extras; golden done line after the reasons', async (t) => {
+  const spec = [plain('needs_edits', 'a'), plain('needs_edits', 'b'), ...Array(4).fill(plain('send_as_is', 'ok')), ...Array(6).fill(S0)];
+  const { home, dir } = await ratedSet(t, spec, 26);
+  await exec(home, ['balance']);
+  await serveExtras(home, 24, (i) => (i < 2 ? ['needs_edits', 'why'] : ['wrong', null]));
+  // S (4) already equals min(6, N=4), so top-up is not open and the set is done.
+  const done = await exec(home, ['next'], recording());
+  const line = 'examples: balanced set 4/4 (send_as_is 4 · needs_edits 4) — cap reached — run eval run\n';
+  assert.equal(done.stdout, line);
+  assert.equal((await exec(home, ['status'])).stdout, line);
+  assert.equal((await exec(home, ['balance'])).stdout, line);
+  assert.equal(examples.readSet(dir).extras.length, 24);
+});
+
+test('pool stop: 5 candidate pairs end extras after 5; golden line without suffix quota', async (t) => {
+  const spec = [plain('needs_edits', 'a'), plain('needs_edits', 'b'), plain('send_as_is', 'x'), plain('send_as_is', 'y'), ...Array(8).fill(S0)];
+  const { home } = await ratedSet(t, spec, 4);
+  await exec(home, ['balance']);
+  const adapters = await serveExtras(home, 5, () => ['wrong', null]);
+  assert.equal(adapters.calls.length, 5);
+  const done = await exec(home, ['next'], adapters);
+  assert.equal(done.stdout, 'examples: balanced set 2/2 (send_as_is 2 · needs_edits 2) — no more build pairs — run eval run\n');
+  assert.equal(adapters.calls.length, 5);
+});
+
+test('balanced 6/6 prints the golden done line from balance, status and next', async (t) => {
+  const spec = [...Array(6).fill(plain('needs_edits', 'n')), ...Array(6).fill(plain('send_as_is', 's'))];
+  const { home } = await ratedSet(t, spec);
+  const line = 'examples: balanced set 6/6 (send_as_is 6 · needs_edits 6) — run eval run\n';
+  assert.equal((await exec(home, ['balance'])).stdout, line);
+  assert.equal((await exec(home, ['status'])).stdout, line);
+  assert.equal((await exec(home, ['next'])).stdout, line);
+});
+
+test('top-up serves exactly the 6 blind items byte-identically, and a needs_edits re-rating keeps the pass going', async (t) => {
+  const { home, dir, rows } = await ratedSet(t, [], 0);
+  // rebuild: items 1-6 N with reason, 7-12 first shown unrated then rated send_as_is without reason
+  const firsts = [];
+  for (let i = 0; i < 12; i++) {
+    if (i < 6) store.appendJsonl(dir, `${examples.DIR}/ratings.jsonl`, { pair_id: rows[i].pair_id, rating: 'needs_edits', reason: 'n', rated_at: OLD });
+    else {
+      const out = (await exec(home, ['next'])).stdout;
+      assert.match(out, new RegExp(`^item ${i + 1}/12 `));
+      firsts.push(out);
+      store.appendJsonl(dir, `${examples.DIR}/ratings.jsonl`, { pair_id: rows[i].pair_id, rating: 'send_as_is', reason: null, rated_at: OLD });
+    }
+  }
+  assert.match((await exec(home, ['balance'])).stdout, /^examples: balancing — extras 0 of 24 rated · needs_edits with reason 6 of 6 · send_as_is with reason 0\n$/);
+  const served = [];
+  for (let i = 0; i < 6; i++) {
+    const out = (await exec(home, ['next'], recording())).stdout;
+    served.push(out);
+    assert.equal(out, firsts[i]);
+    if (i === 2) {
+      assert.equal((await exec(home, ['rate', rows[6 + i].pair_id, 'needs_edits', '--reason', 'now no'])).code, 0);
+      assert.match(await (async () => (await exec(home, ['status'])).stdout)(), /needs_edits with reason 7 of 6/);
+    } else {
+      assert.equal((await exec(home, ['rate', rows[6 + i].pair_id, 'send_as_is', '--reason', 'fine'])).code, 0);
+    }
+  }
+  // S reached 5; one N re-rated, so one more candidate is needed: the pass served items 7..12 and ends with no candidate left.
+  assert.equal(served.length, 6);
+  assert.equal((await exec(home, ['next'])).stdout, 'examples: balanced set 5/5 (send_as_is 5 · needs_edits 5) — too few send_as_is reasons — run eval run\n');
+});
