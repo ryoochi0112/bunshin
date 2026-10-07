@@ -337,7 +337,8 @@ test('examples pins sampling, resume, the owner-only A/B/C loop and the final st
     'Sampling precedes next, rate, and the final status.');
   assert.ok(positions[3] < positions[4], 'Both rate forms precede the final status.');
   pinClauses(text, 'examples', [
-    ['reason prompt', /^\s*`Reason \(one line, optional — press Enter to skip\):`\s*$/m],
+    ['reason prompt', /^\s*`Reason \(one line, optional — reply - to skip\):`\s*$/m],
+    ['dash means skip', /A reply of exactly `-` means skip; run `--no-reason`\./],
     ['never suggest a reason', /Never suggest, complete or paraphrase a reason\./],
     ['never show previous rating', /Never show the previous rating\./],
     ['verbatim reason', /Pass the owner's words verbatim/],

@@ -30,9 +30,9 @@ Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never su
 
    Map the owner's choice A/B/C to `send_as_is`/`needs_edits`/`wrong`. Then ask exactly:
 
-   `Reason (one line, optional — press Enter to skip):`
+   `Reason (one line, optional — reply - to skip):`
 
-   Never suggest, complete or paraphrase a reason. Never show the previous rating. Record only the owner's choice and words. Pass the owner's words verbatim; if the owner gives a reason, run:
+   Never suggest, complete or paraphrase a reason. A reply of exactly `-` means skip; run `--no-reason`. Never show the previous rating. Record only the owner's choice and words. Pass the owner's words verbatim; if the owner gives a reason, run:
 
    ```sh
    node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples rate <pair_id> <rating> --reason "<owner's words>"
@@ -40,7 +40,7 @@ Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never su
 
    Pass the reason as a safely escaped literal argument: inside the double quotes, put a backslash before each `"`, `$`, `` ` `` and `\`.
 
-   If the owner presses Enter to skip, run:
+   If the owner replies `-`, run:
 
    ```sh
    node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples rate <pair_id> <rating> --no-reason
