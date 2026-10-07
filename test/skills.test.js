@@ -329,12 +329,19 @@ test('examples pins sampling, resume, the owner-only A/B/C loop and the final st
   const positions = [
     pinCommand(text, `${base}sample`, 'examples sample'),
     pinCommand(text, `${base}next`, 'examples next'),
-    pinCommand(text, `${base}rate <pair_id> <rating>`, 'examples rate'),
+    pinCommand(text, `${base}rate <pair_id> <rating> --reason "<owner's words>"`, 'examples rate --reason'),
+    pinCommand(text, `${base}rate <pair_id> <rating> --no-reason`, 'examples rate --no-reason'),
     pinCommand(text, `${base}status`, 'examples status'),
   ];
-  assert.ok(positions[0] < positions[1] && positions[1] < positions[2] && positions[2] < positions[3],
+  assert.ok(positions[0] < positions[1] && positions[1] < positions[2] && positions[2] < positions[4],
     'Sampling precedes next, rate, and the final status.');
+  assert.ok(positions[3] < positions[4], 'Both rate forms precede the final status.');
   pinClauses(text, 'examples', [
+    ['reason prompt', /^\s*`Reason \(one line, optional — press Enter to skip\):`\s*$/m],
+    ['never suggest a reason', /Never suggest, complete or paraphrase a reason\./],
+    ['never show previous rating', /Never show the previous rating\./],
+    ['verbatim reason', /Pass the owner's words verbatim/],
+    ['invalid reason asks again', /`examples: invalid reason`, show the error and ask again/],
     ['sample options', /Append `--n <n>` and\/or `--drafter <spec>` only when the user named them\./],
     ['resume offer', /If the CLI exits 1 with `rerun examples sample to resume`, show its error as-is and offer to resume by running the same command again\./],
     ['loop completion', /Repeat the following until `examples next` prints `all <n> items rated`/],

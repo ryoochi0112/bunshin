@@ -28,13 +28,23 @@ Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never su
 
    `A) send as-is  B) needs edits  C) wrong`
 
-   Map the owner's choice A/B/C to `send_as_is`/`needs_edits`/`wrong`. Record only the owner's choice:
+   Map the owner's choice A/B/C to `send_as_is`/`needs_edits`/`wrong`. Then ask exactly:
+
+   `Reason (one line, optional — press Enter to skip):`
+
+   Never suggest, complete or paraphrase a reason. Never show the previous rating. Record only the owner's choice and words. Pass the owner's words verbatim; if the owner gives a reason, run:
 
    ```sh
-   node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples rate <pair_id> <rating>
+   node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples rate <pair_id> <rating> --reason "<owner's words>"
    ```
 
-   Append `--persona <dir>` when the selected persona uses that flag. If the owner stops, stop without rating the current item. On any non-zero exit, show the CLI error as-is and stop.
+   If the owner presses Enter to skip, run:
+
+   ```sh
+   node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples rate <pair_id> <rating> --no-reason
+   ```
+
+   Append `--persona <dir>` when the selected persona uses that flag. If the CLI refuses the reason with `examples: invalid reason`, show the error and ask again; this is the only exception to the last sentence of this step. If the owner stops, stop without rating the current item. On any non-zero exit, show the CLI error as-is and stop.
 
 3. After `examples next` prints that all items are rated, run:
 
