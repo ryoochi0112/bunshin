@@ -8,7 +8,7 @@ user-invocable: true
 
 For engine commands, the plugin root is `${CLAUDE_PLUGIN_ROOT}`, or two directories above this file. If the variable is unset, resolve that fallback and set it for the command process. Use the selected persona consistently through `BUNSHIN_PERSONA` or `--persona <dir>`; otherwise the engine selects the only persona in `BUNSHIN_HOME`. Talk to the user in the user's language. Never write a persona file yourself; the CLI owns every write. Never post or send anything.
 
-Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never suggest a rating, and never add or paraphrase judge reasons beyond what the CLI output shows. The owner chooses every rating. The owner may stop at any time; running the skill again continues at the next unrated item.
+Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never suggest a rating, and never add or paraphrase judge reasons beyond what the CLI output shows. The owner chooses every rating. The owner may stop at any time; running the skill again continues at the next item `examples next` serves.
 
 1. Start with:
 
@@ -24,7 +24,7 @@ Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never su
    node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples next
    ```
 
-   Append `--persona <dir>` when the selected persona uses that flag. Show the CLI item output as printed, one item at a time, then ask exactly:
+   Append `--persona <dir>` when the selected persona uses that flag. After the unrated items, `examples next` serves rated items again for the reason step; this is expected, so rate each one like any other item. Show the CLI item output as printed, one item at a time, then ask exactly:
 
    `A) send as-is  B) needs edits  C) wrong`
 

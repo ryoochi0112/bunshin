@@ -346,6 +346,8 @@ test('examples pins sampling, resume, the owner-only A/B/C loop and the final st
     ['invalid reason asks again', /`examples: invalid reason`, show the error and ask again/],
     ['sample options', /Append `--n <n>` and\/or `--drafter <spec>` only when the user named them\./],
     ['resume offer', /If the CLI exits 1 with `rerun examples sample to resume`, show its error as-is and offer to resume by running the same command again\./],
+    ['rerun continues at served item', /running the skill again continues at the next item `examples next` serves\./],
+    ['re-pass is expected', /After the unrated items, `examples next` serves rated items again for the reason step; this is expected, so rate each one like any other item\./],
     ['loop completion', /Repeat the following until `examples next` prints `all <n> items rated`/],
     ['show one printed item', /Show the CLI item output as printed, one item at a time/],
     ['exact owner options', /^\s*`A\) send as-is  B\) needs edits  C\) wrong`\s*$/m],
@@ -359,6 +361,7 @@ test('examples pins sampling, resume, the owner-only A/B/C loop and the final st
     ['never suggest a rating', /never suggest a rating/],
     ['never post or send', /Never post or send anything\./],
   ]);
+  assert.doesNotMatch(text, /next unrated item/, 'examples: old rerun wording is gone');
   assert.deepEqual(lint(text, 'examples'), []);
   assert.ok(lint(`${text}\nUse the send_message tool.`, 'examples').some((finding) => /Outbound/.test(finding)));
 });
