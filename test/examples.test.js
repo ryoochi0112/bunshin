@@ -89,7 +89,7 @@ test('readSet is null when absent and reports status', (t) => {
   assert.equal(state.set.n, 12);
   assert.deepEqual(state.examples.map((e) => e.position), Array.from({ length: 12 }, (_, i) => i + 1));
   assert.equal(state.ratings[chosen[0].id].rating, 'needs_edits');
-  assert.deepEqual(state.status, { n: 12, drafted: 12, rated: 2, unrated: chosen.slice(2).map((p) => p.id), labels: { send_as_is: 0, needs_edits: 2, wrong: 0 } });
+  assert.deepEqual(state.status, { n: 12, drafted: 12, rated: 2, unrated: chosen.slice(2).map((p) => p.id), labels: { send_as_is: 0, needs_edits: 2, wrong: 0 }, needsReason: [chosen[0].id, chosen[1].id] });
 });
 
 test('readSet sorts examples by position', (t) => {
@@ -201,7 +201,7 @@ test('ready refuses incomplete sets and returns rated rows', (t) => {
   assert.equal(rows[0].rating, 'send_as_is');
   assert.equal(rows[0].draft, all[0].draft);
   const summary = examples.summary(rows);
-  assert.deepEqual(summary, { hash: judge.examplesHash(judge.examplesBlock(rows)), n: 12, labels: { send_as_is: 5, needs_edits: 6, wrong: 1 } });
+  assert.deepEqual(summary, { hash: judge.examplesHash(judge.examplesBlock(rows)), n: 12, labels: { send_as_is: 5, needs_edits: 6, wrong: 1 }, reasons: 0 });
   assert.equal(Object.values(summary.labels).reduce((a, b) => a + b, 0), 12);
   const drafted = rows.map((r, i) => (i === 3 ? { ...r, draft: 'Another draft.' } : r));
   assert.notEqual(examples.summary(drafted).hash, summary.hash);
@@ -220,4 +220,62 @@ test('readSet honours the store path guard on a symlinked judge-examples', (t) =
   fs.writeFileSync(path.join(outside, 'set.json'), '{}');
   fs.symlinkSync(outside, path.join(dir, 'judge-examples'), 'dir');
   assert.throws(() => examples.readSet(dir), { message: 'Persona file path must stay inside the persona directory.' });
+});
+
+test('validReason: string, single line, non-blank, at most 200 code points', () => {
+  const jp200 = '日'.repeat(200);
+  for (const good of ['tone ok, facts match', ' padded ', jp200, 'x'.repeat(200), '😀'.repeat(200), '--starts with dashes']) {
+    assert.equal(examples.validReason(good), true, good.slice(0, 20));
+  }
+  for (const bad of ['', '   ', '\t', 'a\nb', 'a\rb', '\n', '日'.repeat(201), '😀'.repeat(201), 3, null, undefined, {}, ['x'], true]) {
+    assert.equal(examples.validReason(bad), false, JSON.stringify(bad));
+  }
+});
+
+test('validateRating accepts an absent, null or valid reason and refuses anything else', () => {
+  const base = { pair_id: 'sample-01', rating: 'wrong', rated_at: at };
+  for (const ok of [{}, { reason: null }, { reason: 'fine' }, { reason: '日'.repeat(200) }]) {
+    assert.deepEqual(examples.validateRating({ ...base, ...ok }), [], JSON.stringify(ok).slice(0, 30));
+  }
+  for (const bad of [{ reason: 3 }, { reason: '' }, { reason: '  ' }, { reason: 'a\nb' }, { reason: '日'.repeat(201) }, { reason: undefined }, { reason: false }, { reason: {} }]) {
+    assert.deepEqual(examples.validateRating({ ...base, ...bad }), ['examples: invalid example rating'], JSON.stringify(bad));
+  }
+});
+
+test('readSet throws on a hand-written bad reason; ready passes reason string or null', (t) => {
+  const { dir } = setup(t);
+  const chosen = writeSet(dir);
+  for (const reason of [3, 'a\nb', '日'.repeat(201)]) {
+    store.writeJsonl(dir, 'judge-examples/ratings.jsonl', [{ pair_id: chosen[0].id, rating: 'wrong', reason, rated_at: at }]);
+    assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example rating' });
+  }
+  store.writeJsonl(dir, 'judge-examples/ratings.jsonl', []);
+  rate(dir, chosen.map((p) => p.id));
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: chosen[0].id, rating: 'wrong', reason: '日本語の理由', rated_at: at });
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: chosen[1].id, rating: 'wrong', reason: null, rated_at: at });
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: chosen[2].id, rating: 'wrong', reason: 'first', rated_at: at });
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: chosen[2].id, rating: 'wrong', rated_at: at });
+  const rows = examples.ready(dir);
+  assert.equal(rows[0].reason, '日本語の理由');
+  assert.equal(rows[1].reason, null);
+  assert.equal(rows[2].reason, null);
+  assert.equal(rows[3].reason, null);
+  assert.equal(rows[0].rating, 'wrong');
+  assert.equal(rows.every((r) => r.reason === null || typeof r.reason === 'string'), true);
+});
+
+test('needsReason lists rated ids in position order whose latest row has no own reason key', (t) => {
+  const { dir } = setup(t);
+  const chosen = writeSet(dir);
+  const ids = chosen.map((p) => p.id);
+  const append = (row) => store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { ...row, rated_at: '2026-01-01T00:00:00Z' });
+  assert.deepEqual(examples.readSet(dir).status.needsReason, []);
+  append({ pair_id: ids[3], rating: 'wrong' });
+  append({ pair_id: ids[1], rating: 'wrong', reason: null });
+  append({ pair_id: ids[0], rating: 'wrong', reason: 'because' });
+  append({ pair_id: ids[2], rating: 'wrong' });
+  assert.deepEqual(examples.readSet(dir).status.needsReason, [ids[2], ids[3]]);
+  append({ pair_id: ids[2], rating: 'wrong', reason: null });
+  append({ pair_id: ids[0], rating: 'wrong' });
+  assert.deepEqual(examples.readSet(dir).status.needsReason, [ids[0], ids[3]]);
 });

@@ -224,7 +224,7 @@ test('next and rate loop through the set, then status and held-out rejection', a
     assert.equal(rated.stdout, `examples: rated ${rows[i].pair_id} (${i + 1}/12)\n`);
     if (i === 5) assert.equal((await exec(home, ['status'])).stdout, 'examples: 12/12 drafted · 6/12 rated (send_as_is 2 · needs_edits 2 · wrong 2)\n');
   }
-  assert.equal((await exec(home, ['next'])).stdout, 'examples: all 12 items rated — run eval run\n');
+  assert.match((await exec(home, ['next'])).stdout, new RegExp(`^item 1/12 — ${rows[0].pair_id} `));
   assert.equal((await exec(home, ['status'])).stdout, 'examples: 12/12 drafted · 12/12 rated (send_as_is 4 · needs_edits 4 · wrong 4)\n');
   const ratings = store.readJsonl(dir, 'judge-examples/ratings.jsonl');
   assert.equal(ratings.length, 12);
@@ -244,4 +244,104 @@ test('option parsing: duplicates and unknown options exit 1, bad usage exits 2',
     assert.match(result.stderr, /^Usage: bunshin examples sample/);
   }
   assert.equal((await exec(home, ['sample', '--n', '0'], recording())).code, 1);
+});
+
+test('rate stores reason, null or no key; status counts all as rated', async (t) => {
+  const { home, dir } = fixture(t);
+  await exec(home, ['sample', '--drafter', 'fake'], recording());
+  const ids = examples.readSet(dir).examples.map((row) => row.pair_id);
+  assert.equal((await exec(home, ['rate', ids[0], 'wrong', '--reason', 'tone ok, facts match'])).code, 0);
+  assert.equal((await exec(home, ['rate', ids[1], 'wrong', '--no-reason'])).code, 0);
+  assert.equal((await exec(home, ['rate', ids[2], 'wrong'])).code, 0);
+  assert.equal((await exec(home, ['rate', ids[3], 'wrong', '--persona', dir, '--reason', ' 日本語 '])).code, 0);
+  const rows = store.readJsonl(dir, 'judge-examples/ratings.jsonl');
+  assert.equal(rows[0].reason, 'tone ok, facts match');
+  assert.ok(Object.hasOwn(rows[1], 'reason') && rows[1].reason === null);
+  assert.equal(Object.hasOwn(rows[2], 'reason'), false);
+  assert.equal(rows[3].reason, ' 日本語 ');
+  assert.match((await exec(home, ['status'])).stdout, /· 4\/12 rated/);
+  const dashed = await exec(home, ['rate', ids[4], 'wrong', '--reason', '--odd']);
+  assert.equal(dashed.code, 0);
+  assert.equal(store.readJsonl(dir, 'judge-examples/ratings.jsonl')[4].reason, '--odd');
+});
+
+test('rate refuses an invalid reason without writing; 200 code points pass', async (t) => {
+  const { home, dir } = fixture(t);
+  await exec(home, ['sample', '--drafter', 'fake'], recording());
+  const ids = examples.readSet(dir).examples.map((row) => row.pair_id);
+  const file = path.join(dir, 'judge-examples', 'ratings.jsonl');
+  assert.equal((await exec(home, ['rate', ids[0], 'wrong', '--no-reason'])).code, 0);
+  const before = fs.readFileSync(file);
+  for (const reason of ['', '   ', 'a\nb', 'a\rb', '日'.repeat(201)]) {
+    const result = await exec(home, ['rate', ids[1], 'wrong', '--reason', reason]);
+    assert.equal(result.code, 1, JSON.stringify(reason));
+    assert.equal(result.stderr, 'examples: invalid reason\n');
+    assert.deepEqual(fs.readFileSync(file), before);
+  }
+  const ok = await exec(home, ['rate', ids[1], 'wrong', '--reason', '日'.repeat(200)]);
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.equal(store.readJsonl(dir, 'judge-examples/ratings.jsonl')[1].reason, '日'.repeat(200));
+});
+
+test('reason flag-shape errors exit 2 with usage', async (t) => {
+  const { home, dir } = fixture(t);
+  await exec(home, ['sample', '--drafter', 'fake'], recording());
+  const id = examples.readSet(dir).examples[0].pair_id;
+  const file = path.join(dir, 'judge-examples', 'ratings.jsonl');
+  const argvs = [
+    ['rate', id, 'wrong', '--reason', 'x', '--no-reason'], ['rate', id, 'wrong', '--no-reason', '--reason', 'x'],
+    ['rate', id, 'wrong', '--reason'], ['rate', id, 'wrong', '--persona', dir, '--reason'],
+    ['rate', id, 'wrong', '--reason', 'a', '--reason', 'b'], ['rate', id, 'wrong', '--no-reason', '--no-reason'],
+    ['next', '--reason', 'x'], ['next', '--no-reason'], ['status', '--reason', 'x'], ['status', '--no-reason'],
+    ['sample', '--reason', 'x'], ['sample', '--no-reason'],
+  ];
+  for (const argv of argvs) {
+    const result = await exec(home, argv, recording());
+    assert.equal(result.code, 2, argv.join(' '));
+    assert.match(result.stderr, /^Usage: bunshin examples sample/);
+    assert.match(result.stderr, /rate <pair_id> <rating> \[--reason <text> \| --no-reason\] \[--persona <dir>\]/);
+  }
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('next re-offers rated items lacking a reason decision, byte-identical to the first offer', async (t) => {
+  const { home, dir } = fixture(t);
+  await exec(home, ['sample', '--drafter', 'fake'], recording());
+  const rows = examples.readSet(dir).examples;
+  const first = [];
+  for (let i = 0; i < 12; i++) {
+    first.push((await exec(home, ['next'])).stdout);
+    await exec(home, ['rate', rows[i].pair_id, 'needs_edits']);
+  }
+  for (let i = 0; i < 12; i++) {
+    const next = await exec(home, ['next']);
+    assert.equal(next.stdout, first[i]);
+    assert.ok(!next.stdout.includes('needs_edits'));
+    const flag = i === 0 ? ['--reason', 'marker-zq'] : i === 1 ? ['--no-reason'] : i % 2 ? ['--reason', 'why'] : ['--no-reason'];
+    await exec(home, ['rate', rows[i].pair_id, 'wrong', ...flag]);
+    if (i === 1) assert.match((await exec(home, ['status'])).stdout, /12\/12 rated/);
+    assert.ok(!(await exec(home, ['next'])).stdout.includes('marker-zq'));
+  }
+  assert.equal((await exec(home, ['next'])).stdout, 'examples: all 12 items rated — run eval run\n');
+});
+
+test('next serves unrated items before re-passes, and a bare re-rating needs the step again', async (t) => {
+  const { home, dir } = fixture(t);
+  await exec(home, ['sample', '--drafter', 'fake'], recording());
+  const rows = examples.readSet(dir).examples;
+  for (let i = 0; i < 12; i++) {
+    if (i === 4 || i === 5) continue;
+    await exec(home, ['rate', rows[i].pair_id, 'wrong', ...(i < 8 ? [] : ['--no-reason'])]);
+  }
+  // unrated 5, 6 (positions) come before the needing 1..8
+  assert.match((await exec(home, ['next'])).stdout, new RegExp(`^item 5/12 `));
+  await exec(home, ['rate', rows[4].pair_id, 'wrong', '--no-reason']);
+  assert.match((await exec(home, ['next'])).stdout, new RegExp(`^item 6/12 `));
+  await exec(home, ['rate', rows[5].pair_id, 'wrong', '--no-reason']);
+  assert.match((await exec(home, ['next'])).stdout, new RegExp(`^item 1/12 `));
+  for (let i = 0; i < 4; i++) await exec(home, ['rate', rows[i].pair_id, 'wrong', '--no-reason']);
+  for (const i of [6, 7]) await exec(home, ['rate', rows[i].pair_id, 'wrong', '--no-reason']);
+  assert.equal((await exec(home, ['next'])).stdout, 'examples: all 12 items rated — run eval run\n');
+  await exec(home, ['rate', rows[2].pair_id, 'wrong']);
+  assert.match((await exec(home, ['next'])).stdout, new RegExp(`^item 3/12 `));
 });
