@@ -12,6 +12,7 @@ const judge = require('../lib/judge');
 const twin = require('../lib/twin');
 const hosts = require('../lib/hosts');
 const command = require('../lib/commands/eval');
+const examples = require('../lib/examples');
 
 const root = path.join(__dirname, '..');
 const drafter = `fake:${path.join(__dirname, 'fixtures', 'hosts', 'eval-drafts.json')}`;
@@ -100,10 +101,14 @@ test('fake hosts rebuild cases, write shapes, retry invalid judgments and contin
     assert.equal((row.drafter || row.judge).model, 'fake');
     assert.ok(Number.isFinite(Date.parse(row.at)));
   }
-  assert.equal(calls.filter((call) => call.tools === 'none').length, 5);
+  // sample-10: 3 valid calls; sample-12 and sample-13: call 1 malformed twice, then judge_error.
+  assert.equal(calls.filter((call) => call.tools === 'none').length, 7);
+  assert.equal(config.judge_votes, 3);
+  assert.equal(config.judge_examples, null);
+  assert.equal(judgments[0].votes.length, 3);
   const resumed = await evalRun.run(dir, { runId: result.run_id, hosts: adapters });
   assert.deepEqual(resumed, { run_id: result.run_id, drafted: 0, judged: 0, errors: 0 });
-  assert.equal(calls.length, 8);
+  assert.equal(calls.length, 10);
 });
 
 test('drafter firewall, composed system, tool boundaries, stripped judge template and returned models', async (t) => {
@@ -114,8 +119,11 @@ test('drafter firewall, composed system, tool boundaries, stripped judge templat
   assert.ok(cases.every((value) => value.reference_answer.length >= 24));
   for (let index = 0; index < cases.length; index++) {
     const value = cases[index];
-    const draftCall = adapters.calls[index * 2];
-    const judgeCall = adapters.calls[index * 2 + 1];
+    const draftCall = adapters.calls[index * 4];
+    const judgeCalls = adapters.calls.slice(index * 4 + 1, index * 4 + 4);
+    assert.equal(judgeCalls.length, 3);
+    const judgeCall = judgeCalls[0];
+    for (const call of judgeCalls) assert.deepEqual(call, judgeCall);
     assert.equal(draftCall.system, twin.composePrompt(dir, twin.skillForLayer(value.layer)));
     assert.equal(draftCall.prompt, `Question:\n${value.question.text}\n\nContext:\n${value.context.map(({ author, text }) => `${author}: ${text}`).join('\n')}`);
     for (const heldout of cases) for (const field of ['prompt', 'system']) {
@@ -164,7 +172,8 @@ test('preflight failures make no host calls and create no run directory', async 
 });
 
 test('host failures preserve rows and resume only missing work, including judge-only resumes', async (t) => {
-  for (const failAt of [2, 3]) {
+  // Call 2 is sample-10's first judge call; call 5 is sample-12's draft.
+  for (const failAt of [2, 5]) {
     const dir = fixture(t);
     const adapters = recording((input, count) => {
       if (count === failAt) throw new Error('private injected error text');
@@ -195,9 +204,11 @@ test('first invalid judgment retries fresh and valid retry is stored', async (t)
     text: input.tools === 'notion-read' ? 'Synthetic draft.' : count === 2 ? 'invalid' : JSON.stringify(valid), model: `model-${count}`,
   }));
   const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters });
-  assert.equal(adapters.calls.length, 3);
+  assert.equal(adapters.calls.length, 5);
   assert.equal(result.errors, 0);
-  assert.equal(store.readJsonl(dir, `evals/${result.run_id}/judgments.jsonl`)[0].judge.model, 'model-3');
+  const row = store.readJsonl(dir, `evals/${result.run_id}/judgments.jsonl`)[0];
+  assert.equal(row.judge.model, 'model-3');
+  assert.deepEqual(row.votes.map((v) => v.model), ['model-3', 'model-4', 'model-5']);
 });
 
 test('interruption after a persisted judgment does not duplicate calls or rows on resume', async (t) => {
@@ -216,10 +227,10 @@ test('interruption after a persisted judgment does not duplicate calls or rows o
     await assert.rejects(evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters }), /simulated interruption/);
   } finally { store.appendJsonl = append; }
   assert.equal(interrupted, 1);
-  assert.equal(adapters.calls.length, 2);
+  assert.equal(adapters.calls.length, 4);
   const runId = fs.readdirSync(path.join(dir, 'evals'))[0];
   assert.deepEqual(await evalRun.run(dir, { runId, hosts: adapters }), { run_id: runId, drafted: 0, judged: 0, errors: 0 });
-  assert.equal(adapters.calls.length, 2);
+  assert.equal(adapters.calls.length, 4);
   for (const file of ['drafts', 'judgments']) assert.equal(store.readJsonl(dir, `evals/${runId}/${file}.jsonl`).length, 1);
 });
 
@@ -291,4 +302,171 @@ test('spawned CLI uses temp BUNSHIN_HOME and persists a resumable fake run', (t)
   const resumed = spawnSync(process.execPath, [path.join(root, 'bin', 'bunshin.js'), 'eval', 'run', '--run', runId], { cwd: root, env, encoding: 'utf8' });
   assert.equal(resumed.status, 0, resumed.stderr);
   assert.match(resumed.stdout, /drafted 0, judged 0, judge errors 0/);
+});
+
+const ratedAt = '2026-10-07T00:00:00.000Z';
+const labels = ['send_as_is', 'needs_edits', 'wrong'];
+
+// Writes a 12-example set through the examples store shapes, with a marker in every field.
+function writeExamples(dir, rated = 12) {
+  const chosen = examples.selectSet(dir, { seed: '0123456789abcdef', n: 12 });
+  store.writeJson(dir, 'judge-examples/set.json', { format_version: 1, seed: '0123456789abcdef', n: 12,
+    pair_ids: chosen.map((pair) => pair.id), drafter: { host: 'fake', model: null }, created_at: ratedAt });
+  const rows = chosen.map((pair, i) => ({ pair_id: pair.id, layer: pair.layer, position: i + 1,
+    question: { author: pair.question.author, text: `QMARK-${i + 1}-Q` },
+    context: [{ author: `author-${i + 1}`, text: `CMARK-${i + 1}-C` }],
+    reference_answer: `RMARK-${i + 1}-R`, draft: `DMARK-${i + 1}-D`,
+    drafter: { host: 'fake', model: null }, drafted_at: ratedAt }));
+  store.writeJsonl(dir, 'judge-examples/examples.jsonl', rows);
+  store.writeJsonl(dir, 'judge-examples/ratings.jsonl', rows.slice(0, rated)
+    .map((row, i) => ({ pair_id: row.pair_id, rating: labels[i % 3], rated_at: ratedAt })));
+  return { chosen, rows };
+}
+
+test('AC2: an incomplete example set refuses every run mode before any write; a complete one is recorded', async (t) => {
+  const dir = fixture(t);
+  const { rows } = writeExamples(dir, 11);
+  store.writeJsonl(dir, 'cases.jsonl', []);
+  const adapters = recording();
+  await assert.rejects(evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: adapters }),
+    { message: `eval run: judge examples not ready — 1 of 12 unrated (${rows[11].pair_id})` });
+  assert.equal(adapters.calls.length, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+  assert.deepEqual(store.readJsonl(dir, 'cases.jsonl'), [], 'cases.jsonl is not rebuilt before the readiness gate');
+  for (const opts of [{ runId: '2026-10-20-01' }, { rejudgeFrom: '2026-10-20-01' }]) {
+    await assert.rejects(evalRun.run(dir, { ...opts, hosts: adapters }), /judge examples not ready — 1 of 12 unrated/);
+  }
+  assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: rows[11].pair_id, rating: 'send_as_is', rated_at: ratedAt });
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters });
+  const config = store.readJson(dir, `evals/${result.run_id}/run.json`);
+  assert.equal(config.judge_examples.n, 12);
+  assert.match(config.judge_examples.hash, /^[0-9a-f]{16}$/);
+  assert.equal(Object.values(config.judge_examples.labels).reduce((a, b) => a + b, 0), 12);
+  assert.deepEqual(config.judge_examples, examples.summary(examples.ready(dir)));
+  assert.equal(config.judge_votes, 3);
+  assert.equal(config.judge_rubric, judge.rubricHash());
+  const rejudged = await evalRun.run(dir, { rejudgeFrom: result.run_id, judge: 'fake', hosts: recording() });
+  const rejudgedConfig = store.readJson(dir, `evals/${rejudged.run_id}/run.json`);
+  assert.deepEqual(rejudgedConfig.judge_examples, config.judge_examples);
+  assert.equal(rejudgedConfig.judge_votes, 3);
+  assert.equal(rejudgedConfig.judge_rubric, judge.rubricHash());
+});
+
+test('AC2: without an example set the run records judge_examples null and judge_votes 3', async (t) => {
+  const dir = fixture(t);
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: recording() });
+  const config = store.readJson(dir, `evals/${result.run_id}/run.json`);
+  assert.equal(config.judge_examples, null);
+  assert.equal(config.judge_votes, 3);
+  const rejudged = await evalRun.run(dir, { rejudgeFrom: result.run_id, judge: 'fake', hosts: recording() });
+  const rejudgedConfig = store.readJson(dir, `evals/${rejudged.run_id}/run.json`);
+  assert.equal(rejudgedConfig.judge_examples, null);
+  assert.equal(rejudgedConfig.judge_votes, 3);
+});
+
+test('AC3: every judge call carries the full example block in system text and nothing else leaks', async (t) => {
+  const dir = fixture(t);
+  const { rows } = writeExamples(dir);
+  const adapters = recording();
+  await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: adapters });
+  const cases = store.readJsonl(dir, 'cases.jsonl');
+  const pairs = store.readJsonl(dir, 'pairs.jsonl');
+  const judgeCalls = adapters.calls.filter((call) => call.tools === 'none');
+  const draftCalls = adapters.calls.filter((call) => call.tools === 'notion-read');
+  assert.equal(judgeCalls.length, cases.length * 3);
+  const markers = rows.flatMap((row) => [row.question.text, row.context[0].text, row.reference_answer, row.draft]);
+  for (const [index, call] of judgeCalls.entries()) {
+    for (const marker of markers) assert.ok(call.system.includes(marker), marker);
+    for (const row of rows) {
+      const rating = labels[(row.position - 1) % 3];
+      assert.ok(call.system.includes(`## Example ${row.position}\n\nQuestion:\n${row.question.text}\n\n`
+        + `Context:\n${row.context[0].author}: ${row.context[0].text}\n\nReference answer:\n${row.reference_answer}\n\n`
+        + `Draft:\n${row.draft}\n\nOwner rating: ${rating}`), `example ${row.position}`);
+    }
+    for (const id of ['sample-10', 'sample-12', 'sample-13']) assert.ok(!call.system.includes(id), id);
+    for (const pair of pairs) assert.ok(!call.system.includes(pair.permalink), pair.permalink);
+    for (const text of ['permalink', 'rated_at', ratedAt]) assert.ok(!call.system.includes(text), text);
+    const value = cases[Math.floor(index / 3)];
+    const draft = store.readJsonl(dir, `evals/${fs.readdirSync(path.join(dir, 'evals'))[0]}/drafts.jsonl`).find((row) => row.case_id === value.id);
+    assert.equal(call.prompt, judge.buildPrompt(value, draft));
+    assert.equal(call.system, judge.composeSystem(examples.ready(dir)));
+  }
+  assert.equal(draftCalls.length, cases.length);
+  for (const call of draftCalls) for (const marker of markers) assert.ok(!call.system.includes(marker), marker);
+});
+
+function verdict(rating, wrong) {
+  return { rating, reason: `Reason ${rating} ${wrong}.`, wrong_uncited: wrong, language_match: wrong === 0,
+    claims: Array.from({ length: wrong }, (_, i) => ({ text: `Wrong ${i}.`, cited: false, correct: false })) };
+}
+
+test('AC4: three judge calls are stored as their majority vote with per-call votes', async (t) => {
+  const dir = fixture(t);
+  const plan = [
+    [verdict('send_as_is', 0), verdict('send_as_is', 2), verdict('wrong', 1)],
+    [verdict('send_as_is', 0), verdict('needs_edits', 0), verdict('wrong', 3)],
+    [verdict('wrong', 0), verdict('wrong', 0), verdict('needs_edits', 0)],
+  ];
+  let judged = 0;
+  const adapters = recording((input) => {
+    if (input.tools !== 'none') return { text: 'Synthetic draft.', model: 'drafter' };
+    const n = judged++;
+    return { text: JSON.stringify(plan[Math.floor(n / 3)][n % 3]), model: `judge-${n}` };
+  });
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: adapters });
+  const rows = store.readJsonl(dir, `evals/${result.run_id}/judgments.jsonl`);
+  assert.deepEqual(rows.map((row) => row.rating), ['send_as_is', 'needs_edits', 'wrong']);
+  assert.deepEqual(rows.map((row) => row.wrong_uncited), [1, 0, 0]);
+  assert.equal(rows[0].reason, 'Reason send_as_is 0.');
+  assert.deepEqual(rows[0].claims, []);
+  assert.deepEqual(rows.map((row) => row.language_match), [false, true, true]);
+  for (const [i, row] of rows.entries()) {
+    assert.deepEqual(row.judge, { host: 'fake', model: `judge-${i * 3}` });
+    assert.equal(row.case_id, ['sample-10', 'sample-12', 'sample-13'][i]);
+    assert.ok(Number.isFinite(Date.parse(row.at)));
+    assert.deepEqual(row.votes, plan[i].map((call, k) => ({ rating: call.rating, wrong_uncited: call.wrong_uncited,
+      language_match: call.language_match, model: `judge-${i * 3 + k}` })));
+  }
+});
+
+test('AC5: a host error on judge call 2 writes no row and the resume makes 3 fresh calls', async (t) => {
+  const dir = fixture(t);
+  let judged = 0;
+  const adapters = recording((input) => {
+    if (input.tools === 'none' && ++judged === 2) throw new Error('private injected error text');
+    return { text: input.tools === 'none' ? JSON.stringify(valid) : 'Synthetic draft.', model: 'returned' };
+  });
+  await assert.rejects(evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters }),
+    /eval run: host error on case sample-10 \(fake\); rerun with --run \S+ to resume/);
+  const runId = fs.readdirSync(path.join(dir, 'evals'))[0];
+  assert.deepEqual(store.readJsonl(dir, `evals/${runId}/judgments.jsonl`), []);
+  const resumedHosts = recording();
+  assert.deepEqual(await evalRun.run(dir, { runId, hosts: resumedHosts }), { run_id: runId, drafted: 0, judged: 1, errors: 0 });
+  assert.equal(resumedHosts.calls.length, 3);
+  assert.ok(resumedHosts.calls.every((call) => call.tools === 'none'));
+  assert.equal(store.readJsonl(dir, `evals/${runId}/judgments.jsonl`)[0].votes.length, 3);
+});
+
+test('--run refuses a changed example set or vote count', async (t) => {
+  const dir = fixture(t);
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: recording() });
+  const file = `evals/${result.run_id}/run.json`;
+  const original = store.readJson(dir, file);
+  const { judge_examples: _, ...missing } = original;
+  for (const [config, message] of [
+    [{ ...original, judge_examples: { hash: '0000000000000000', n: 12, labels: {} } }, 'eval run: judge examples differ from run'],
+    [missing, 'eval run: judge examples differ from run'],
+    [{ ...original, judge_votes: 1 }, 'eval run: judge votes differ from run'],
+    [(({ judge_votes: _v, ...rest }) => rest)(original), 'eval run: judge votes differ from run'],
+  ]) {
+    store.writeJson(dir, file, config);
+    const adapters = recording();
+    await assert.rejects(evalRun.run(dir, { runId: result.run_id, hosts: adapters }), { message });
+    assert.equal(adapters.calls.length, 0);
+  }
+  // A set completed after the run started changes the hash from null.
+  store.writeJson(dir, file, original);
+  writeExamples(dir);
+  await assert.rejects(evalRun.run(dir, { runId: result.run_id, hosts: recording() }), { message: 'eval run: judge examples differ from run' });
 });

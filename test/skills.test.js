@@ -190,7 +190,7 @@ test('every skill and Markdown template passes the safety lint', () => {
 test('host lint rejects removal of either engine clause and Claude-only instructions', () => {
   const names = instructionFiles(root).filter((file) => path.basename(file) === 'SKILL.md')
     .map((file) => path.basename(path.dirname(file)));
-  assert.deepEqual(names, ['build', 'calibrate', 'diagnose', 'eval', 'export', 'harvest',
+  assert.deepEqual(names, ['build', 'calibrate', 'diagnose', 'eval', 'examples', 'export', 'harvest',
     'idea-discussion', 'interview', 'shadow', 'spec-answer']);
   for (const name of names) {
     const text = skill(name);
@@ -223,8 +223,8 @@ test('harvest first checks the host before resolving fallback or using any conne
   }
 });
 
-test('all ten skills are user-invocable and follow the M2 engine conventions', () => {
-  for (const name of [...operatorSkills, 'spec-answer', 'idea-discussion', 'shadow', 'eval', 'calibrate', 'export']) {
+test('all eleven skills are user-invocable and follow the M2 engine conventions', () => {
+  for (const name of [...operatorSkills, 'spec-answer', 'idea-discussion', 'shadow', 'eval', 'calibrate', 'examples', 'export']) {
     const text = skill(name);
     assert.match(text, new RegExp(`^name: ${name}$`, 'm'));
     assert.match(text, /^description: \S.*$/m);
@@ -319,6 +319,44 @@ test('calibrate pins sampling, owner-only ratings, the blinded loop and final sc
     ['never reveal judge rating', /Never reveal or guess the judge's rating/],
     ['never suggest a rating', /never suggest a rating/],
     ['judge reasons stay within CLI output', /never add or paraphrase judge reasons beyond what the CLI output shows\./],
+  ]);
+});
+
+test('examples pins sampling, resume, the owner-only A/B/C loop and the final status', () => {
+  const text = skill('examples');
+  assert.match(text, /^description: Draft twin answers for build-split pairs and let the owner rate them as judge examples\.$/m);
+  const base = 'node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples ';
+  const positions = [
+    pinCommand(text, `${base}sample`, 'examples sample'),
+    pinCommand(text, `${base}next`, 'examples next'),
+    pinCommand(text, `${base}rate <pair_id> <rating>`, 'examples rate'),
+    pinCommand(text, `${base}status`, 'examples status'),
+  ];
+  assert.ok(positions[0] < positions[1] && positions[1] < positions[2] && positions[2] < positions[3],
+    'Sampling precedes next, rate, and the final status.');
+  pinClauses(text, 'examples', [
+    ['sample options', /Append `--n <n>` and\/or `--drafter <spec>` only when the user named them\./],
+    ['resume offer', /If the CLI exits 1 with `rerun examples sample to resume`, show its error as-is and offer to resume by running the same command again\./],
+    ['loop completion', /Repeat the following until `examples next` prints `all <n> items rated`/],
+    ['show one printed item', /Show the CLI item output as printed, one item at a time/],
+    ['exact owner options', /^\s*`A\) send as-is  B\) needs edits  C\) wrong`\s*$/m],
+    ['owner choice mapping', /Map the owner's choice A\/B\/C to `send_as_is`\/`needs_edits`\/`wrong`\./],
+    ['record only owner choice', /Record only the owner's choice/],
+    ['owner may stop and resume', /If the owner stops, stop without rating the current item\./],
+    ['errors stop', /On any non-zero exit, show the CLI error as-is and stop\./],
+    ['status as-is then eval', /print the status line as-is, then say to run `\/bunshin:eval`\./],
+    ['never read judgments', /Never read `judgments\.jsonl`\./],
+    ['never reveal judge rating', /Never reveal or guess the judge's rating/],
+    ['never suggest a rating', /never suggest a rating/],
+    ['never post or send', /Never post or send anything\./],
+  ]);
+  assert.deepEqual(lint(text, 'examples'), []);
+  assert.ok(lint(`${text}\nUse the send_message tool.`, 'examples').some((finding) => /Outbound/.test(finding)));
+});
+
+test('eval points to examples only when the report shows no judge examples', () => {
+  pinClauses(skill('eval'), 'eval', [
+    ['examples anchor sentence', /If the report shows `judge examples: none`, add one sentence that `\/bunshin:examples` anchors the judge to the owner's ratings\./],
   ]);
 });
 

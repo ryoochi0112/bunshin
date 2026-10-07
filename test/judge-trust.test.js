@@ -63,10 +63,13 @@ test('rubric hash is stable, matches the stripped template and changes with the 
   assert.notEqual(judge.rubricHash(`${text}\nOne more rule.`), judge.rubricHash());
 });
 
-test('judge rubric defines every rating and keeps unverifiable claims neutral', () => {
+test('judge rubric defines every rating, defaults to send_as_is and keeps unverifiable claims neutral', () => {
   const text = judge.rubric();
   for (const rating of ['send_as_is:', 'needs_edits:', 'wrong:']) assert.ok(text.includes(rating), rating);
-  assert.match(text, /not the only\s+acceptable answer/);
+  assert.match(text, /not the standard the draft must match/);
+  assert.match(text, /send_as_is: the default/);
+  assert.match(text, /one concrete edit/);
+  assert.match(text, /Softening a direct or blunt tone is not a needed edit/);
   assert.match(text, /correct null never lowers the rating/);
 });
 
@@ -146,6 +149,54 @@ test('reports inherit trust only from a calibrated run with the same judge setup
   assert.equal(store.readJson(dir, `evals/${later.run_id}/report.json`).trust_from, null);
 });
 
+test('trust follows examples, votes and rubric: any single change or a legacy run breaks inheritance', async (t) => {
+  const { home, dir } = fixture(t);
+  const labels = { send_as_is: 2, needs_edits: 1, wrong: 0 };
+  const stamp = { judge_examples: { hash: 'aaaaaaaaaaaaaaaa', n: 3, labels }, judge_votes: 3 };
+  const calibrated = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+  rateAll(dir, calibrated.run_id, 'send_as_is');
+  padRatings(dir, calibrated.run_id);
+  const later = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+  const edit = (id, change) => {
+    const file = `evals/${id}/run.json`;
+    store.writeJson(dir, file, change(store.readJson(dir, file)));
+  };
+  const trustFrom = async () => {
+    assert.equal(await evalCommand.run(['report', '--run', later.run_id], io(home).value), 0);
+    return store.readJson(dir, `evals/${later.run_id}/report.json`);
+  };
+  for (const id of [calibrated.run_id, later.run_id]) edit(id, (run) => ({ ...run, ...stamp }));
+  const same = await trustFrom();
+  assert.deepEqual([same.judge_trust, same.trust_from], ['trusted', calibrated.run_id]);
+
+  const changes = {
+    rubric: (run) => ({ ...run, judge_rubric: '0000000000000000' }),
+    'draft edit': (run) => ({ ...run, judge_examples: { ...run.judge_examples, hash: 'bbbbbbbbbbbbbbbb' } }),
+    'rating edit': (run) => ({ ...run, judge_examples: { ...run.judge_examples, hash: 'bbbbbbbbbbbbbbbb', labels: { send_as_is: 1, needs_edits: 1, wrong: 1 } } }),
+    'example count': (run) => ({ ...run, judge_examples: { ...run.judge_examples, hash: 'bbbbbbbbbbbbbbbb', n: 4 } }),
+    'examples removed': (run) => ({ ...run, judge_examples: null }),
+    votes: (run) => ({ ...run, judge_votes: 1 }),
+  };
+  for (const [name, change] of Object.entries(changes)) {
+    const file = `evals/${later.run_id}/run.json`;
+    const original = store.readJson(dir, file);
+    edit(later.run_id, change);
+    const report = await trustFrom();
+    assert.deepEqual([name, report.judge_trust, report.trust_from], [name, 'uncalibrated', null]);
+    store.writeJson(dir, file, original);
+  }
+
+  // A legacy run (no judge_votes) neither inherits nor lends trust.
+  const legacy = (run) => { const { judge_votes: _, ...rest } = run; return rest; };
+  edit(later.run_id, legacy);
+  assert.equal((await trustFrom()).trust_from, null, 'legacy later run');
+  edit(later.run_id, (run) => ({ ...run, ...stamp }));
+  edit(calibrated.run_id, legacy);
+  assert.equal((await trustFrom()).trust_from, null, 'legacy lender');
+  edit(later.run_id, legacy);
+  assert.equal((await trustFrom()).trust_from, null, 'both legacy');
+});
+
 test('runs without a rubric hash or a reported judge model never share trust', async (t) => {
   const { home, dir } = fixture(t);
   const calibrated = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
@@ -215,4 +266,50 @@ test('eval CLI accepts --rejudge-from and lists it in usage', async (t) => {
   const missing = io(home);
   assert.equal(await evalCommand.run(['run', '--rejudge-from', '2026-10-20-01'], missing.value), 1);
   assert.match(missing.out.stderr, /unknown source run/);
+});
+
+const exampleRows = () => [
+  { position: 1, pair_id: 'PAIRID1', permalink: 'https://example.invalid/PERMA', rated_at: '2020-01-01T00:00:00Z', drafted_at: 'DRAFTEDAT', drafter: 'DRAFTERX', layer: 'LAYERX',
+    question: { author: 'asker', text: 'QMARK1' }, context: [{ author: 'ann', text: 'CMARK1' }], reference_answer: 'RMARK1', draft: 'DMARK1', rating: 'send_as_is' },
+  { position: 2, pair_id: 'PAIRID2', question: { author: 'asker', text: 'QMARK2' }, context: [{ author: 'bob', text: 'CMARK2' }], reference_answer: 'RMARK2', draft: 'DMARK2', rating: 'wrong' },
+];
+
+test('examplesBlock renders only the five fields per example', () => {
+  const block = judge.examplesBlock(exampleRows());
+  for (const marker of ['QMARK1', 'CMARK1', 'RMARK1', 'DMARK1', 'QMARK2', 'CMARK2', 'RMARK2', 'DMARK2']) {
+    assert.equal(block.split(marker).length - 1, 1, marker);
+  }
+  assert.ok(block.startsWith(judge.examplesTemplate()));
+  assert.ok(block.includes('## Example 1\n') && block.includes('## Example 2\n'));
+  assert.ok(block.includes('Owner rating: send_as_is') && block.includes('Owner rating: wrong'));
+  assert.ok(block.includes('Context:\nann: CMARK1'));
+  for (const leak of ['PAIRID', 'PERMA', 'pair_id', 'permalink', '2020-01-01', 'DRAFTEDAT', 'DRAFTERX', 'LAYERX']) assert.ok(!block.includes(leak), leak);
+});
+
+test('examplesBlock orders by position without mutating the input', () => {
+  const reversed = exampleRows().reverse();
+  const block = judge.examplesBlock(reversed);
+  assert.ok(block.indexOf('## Example 1') < block.indexOf('## Example 2'));
+  assert.deepEqual(reversed.map((r) => r.position), [2, 1]);
+});
+
+test('examplesHash is 16 hex, stable and sensitive to draft and rating', () => {
+  const rows = exampleRows();
+  const hash = judge.examplesHash(judge.examplesBlock(rows));
+  assert.match(hash, /^[0-9a-f]{16}$/);
+  assert.equal(hash, judge.examplesHash(judge.examplesBlock(exampleRows())));
+  const draft = exampleRows(); draft[1].draft = 'changed';
+  const rating = exampleRows(); rating[0].rating = 'needs_edits';
+  assert.notEqual(hash, judge.examplesHash(judge.examplesBlock(draft)));
+  assert.notEqual(hash, judge.examplesHash(judge.examplesBlock(rating)));
+});
+
+test('composeSystem appends examples after the rubric and leaves the rubric hash alone', () => {
+  const before = judge.rubricHash();
+  assert.equal(judge.composeSystem(null), judge.rubric());
+  const composed = judge.composeSystem(exampleRows());
+  assert.ok(composed.startsWith(judge.rubric()));
+  assert.equal(composed, `${judge.rubric()}\n\n${judge.examplesBlock(exampleRows())}`);
+  assert.equal(judge.rubricHash(), before);
+  assert.equal(judge.MAX_BLOCK_CHARS, 60000);
 });

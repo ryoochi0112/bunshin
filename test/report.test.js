@@ -68,8 +68,21 @@ test('golden report reproduces spec §3 with synthetic names and host models', (
     'judgment:  send as-is 44% (+3)',
     'overall:   send as-is 52%  → launch bar MET',
     'judge agreement with Sora Aoki: 26/30 (87%) → trusted',
-    'drafter: fake draft-model · judge: fake judge-model', '',
+    'drafter: fake draft-model · judge: fake judge-model',
+    'judge examples: none · 1-call vote', '',
   ].join('\n'));
+});
+
+test('judge examples line shows counts and vote size, or none', () => {
+  const render = (extra) => report.renderMarkdown(report.build({ ...input(), run: { ...run, ...extra } })).split('\n');
+  const at = (lines) => lines[lines.indexOf(lines.find((line) => line.startsWith('drafter: '))) + 1];
+  const labels = { send_as_is: 7, needs_edits: 4, wrong: 1 };
+  assert.equal(at(render({ judge_examples: { n: 12, labels }, judge_votes: 3 })),
+    'judge examples: 12 (send_as_is 7 · needs_edits 4 · wrong 1) · 3-call vote');
+  assert.equal(at(render({ judge_examples: null, judge_votes: 3 })), 'judge examples: none · 3-call vote');
+  assert.equal(at(render({})), 'judge examples: none · 1-call vote');
+  const value = report.build({ ...input(), run: { ...run, judge_examples: { n: 2, labels }, judge_votes: 3 } });
+  assert.deepEqual([value.judge_examples.n, value.judge_votes], [2, 3]);
 });
 
 test('launch-bar table uses all persona thresholds and only the selected basis', () => {

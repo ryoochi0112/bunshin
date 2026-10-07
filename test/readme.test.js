@@ -56,6 +56,17 @@ test('README sections, installation and whole limit sentences are pinned', () =>
   ]) assert.ok(lines.includes(sentence), `Missing complete line: ${sentence}`);
 });
 
+test('README lists the examples step directly before eval, then calibrate and export', () => {
+  const lines = readme.split('\n');
+  const steps = lines.filter((line) => /^\d+\. `\/bunshin:/.test(line)).map((line) => line.match(/^(\d+)\. `\/bunshin:([a-z-]+)`/).slice(1, 3).join(' '));
+  assert.deepEqual(steps, ['1 harvest', '2 interview', '3 diagnose', '4 build', '5 examples', '6 eval', '7 calibrate', '8 export']);
+  const step = lines.find((line) => line.startsWith('5. `/bunshin:examples`'));
+  assert.match(step, /optional/);
+  assert.match(step, /12 build-split drafts/);
+  assert.match(step, /before eval lets calibrate rate the anchored judge/);
+  assert.equal(lines.filter((line) => line.startsWith('5. ')).length, 1);
+});
+
 test('README sample commands execute and produce a report in a temporary home', (t) => {
   const block = readme.match(/<!-- sample-path -->\r?\n```sh\r?\n([\s\S]*?)\r?\n```/);
   assert.ok(block, 'sample-path must directly precede a sh block');

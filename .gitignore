@@ -17,6 +17,7 @@ evals/
 calibration/
 shadow/
 export/
+judge-examples/
 
 !/skills/**
 !/templates/**
@@ -35,3 +36,4 @@ export/
 !/sample/persona/**/calibration/
 !/sample/persona/**/shadow/
 !/sample/persona/**/export/
+!/sample/persona/**/judge-examples/

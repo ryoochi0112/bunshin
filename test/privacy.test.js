@@ -10,7 +10,7 @@ const store = require('../lib/store');
 
 const root = path.resolve(__dirname, '..');
 // Every spec §7 persona file and directory name; data belongs only in /sample/persona/.
-const sensitiveDirectories = ['evals', 'calibration', 'shadow', 'export'];
+const sensitiveDirectories = ['evals', 'calibration', 'shadow', 'export', 'judge-examples'];
 const sensitiveFiles = new Set([
   'persona.json', 'pairs.jsonl', 'split.json', 'cases.jsonl', 'interview.jsonl', 'interview-state.json',
   'conflicts.jsonl', 'identity.json', 'identity.md', '.identity-transaction.json', ...sensitiveDirectories,
@@ -184,10 +184,14 @@ test('gitignore protects every private persona file and permits sample files des
   const files = (dir) => [...sensitiveFiles].filter((file) => file !== '.identity-transaction.json')
     .map((file) => (sensitiveDirectories.includes(file) ? `${dir}/${file}/run-1/report.json` : `${dir}/${file}`));
   // Outside /personas/, so each filename rule is what ignores the path.
-  const privatePaths = [...files('stray/x'), 'stray/x/.identity-transaction.json'];
+  const privatePaths = [
+    ...files('stray/x'), 'stray/x/.identity-transaction.json', 'stray/x/judge-examples/examples.jsonl',
+  ];
   const codePaths = [
     'templates/export/README.md', 'skills/export/SKILL.md', 'skills/shadow/SKILL.md', 'skills/calibrate/SKILL.md',
     'test/fixtures/evals/run-1/report.json', 'test/fixtures/shadow/s1/question.json', 'test/fixtures/persona.json',
+    'skills/examples/SKILL.md', 'templates/judge-examples.md', 'test/fixtures/judge-examples/examples.jsonl',
+    'sample/persona/judge-examples/examples.jsonl',
   ];
   for (const environment of [env, hostile]) {
     // --no-index also checks ignore rules after the sample is tracked.

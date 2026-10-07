@@ -182,7 +182,7 @@ test('eval format examples match persisted records, judge parser, and report bui
   assert.deepEqual(keys(error), keys(actualJudgments.find((row) => row.rating === 'judge_error')));
   assert.equal(error.rating, 'judge_error');
   assert.equal(error.reason, 'invalid judge output');
-  const { case_id, judge: provenance, at, ...output } = judgment;
+  const { case_id, judge: provenance, at, votes, ...output } = judgment;
   assert.deepEqual(judge.parse(JSON.stringify(output)), output);
   assert.equal(provenance.host, 'fake');
   assert.ok(Number.isFinite(Date.parse(at)));

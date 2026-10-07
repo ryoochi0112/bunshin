@@ -62,6 +62,7 @@ host. Run CLI examples from the plugin/repository root. Shared skills resolve
 | Shadow | Pasted text via `shadow new --question-file <file>`; `shadow draft <id> --drafter codex`; `shadow show <id>`. |
 | Export | `export` writes the standalone Claude Code persona package. Loading that package in Codex has not been measured. |
 | Spec answer | No reachable live source on the Codex adapter; answer `I do not know.` with `Sources: none`. |
+| Examples | `examples sample --drafter codex`; rating runs on either host. |
 | Idea discussion | Uses evidenced persona priorities. |
 | Harvest and live Notion search | Stay on Claude Code; harvest stops on Codex even if connectors are available. |
 
