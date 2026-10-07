@@ -402,6 +402,11 @@ Each line in `evals/<run_id>/judgments.jsonl` contains a validated judge result 
 | `claims[].correct` | `true`, `false`, or `null` when unknown. |
 | `wrong_uncited` | Count of wrong uncited claims; absent on `judge_error`. |
 | `language_match` | Whether the language matches the question; absent on `judge_error`. |
+| `votes` | Three per-call judge votes; absent on `judge_error` rows. |
+| `votes[].rating` | Rating from one judge call. |
+| `votes[].wrong_uncited` | Wrong uncited count from one judge call. |
+| `votes[].language_match` | Language match from one judge call. |
+| `votes[].model` | Model returned by that call, or `null` for default. |
 | `judge` | Host and returned model object. |
 | `judge.host` | Judge host. |
 | `judge.model` | Recorded model name, or `null` for default. |
@@ -410,7 +415,7 @@ Each line in `evals/<run_id>/judgments.jsonl` contains a validated judge result 
 ### Example: `judgments.jsonl`
 
 ```json
-{"case_id":"sample-10","rating":"send_as_is","reason":"The draft preserves the small experiment.","claims":[],"wrong_uncited":0,"language_match":true,"judge":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
+{"case_id":"sample-10","rating":"send_as_is","reason":"The draft preserves the small experiment.","claims":[],"wrong_uncited":0,"language_match":true,"votes":[{"rating":"send_as_is","wrong_uncited":0,"language_match":true,"model":"fake"},{"rating":"send_as_is","wrong_uncited":0,"language_match":true,"model":"fake"},{"rating":"needs_edits","wrong_uncited":0,"language_match":true,"model":"fake"}],"judge":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
 ```
 
 After two invalid judge responses, the error row contains only the following fields. It is excluded from rates and counted separately as `judge_errors`.
@@ -425,7 +430,7 @@ After two invalid judge responses, the error row contains only the following fie
 
 `eval report` writes both files under `evals/<run_id>/`, replacing JSON first and Markdown second through atomic writes. Rerunning restores both files after interruption. Without `--run`, it selects the latest date and then numeric sequence. Deltas compare judge rates against the latest earlier run with a report.
 
-Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). A run without its own ratings inherits agreement from the latest run that has ratings and the same judge host, model, rubric hash and recorded judge models. Each new run records the rubric hash of `templates/judge.md` in `run.json`, so editing the rubric resets trust to `uncalibrated`. Runs made before the hash existed never share trust. An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone.
+Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). A run without its own ratings inherits agreement from the latest run that has ratings and the same judge host, model, rubric hash and recorded judge models. Each new run records the rubric hash of `templates/judge.md` in `run.json`, so editing the rubric resets trust to `uncalibrated`. Each new run also records `judge_examples` and `judge_votes` in `run.json`. `judge_examples` is `null` when the persona has no owner example set; otherwise it is `{hash, n, labels: {send_as_is, needs_edits, wrong}}` for the examples placed in the judge system text. `judge_votes` is the integer number of judge calls per case, currently `3`. `eval run --run` refuses to resume when either value differs from the current examples or vote count. Runs made before the hash existed never share trust. An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone.
 
 `eval run --rejudge-from <run_id>` starts a new run that copies the source run's drafts and judges them with the current rubric. It never drafts. The owner already saw those drafts, so a re-judged run cannot be calibrated. `calibrate compare --run <run_id>` prints its agreement with the source run's ratings as a tuning-set check that never sets trust. The bar applies `launch_bar.min_heldout`, `min_per_layer`, and `send_as_is`, plus zero knowledge wrong uncited facts.
 
