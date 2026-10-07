@@ -63,10 +63,13 @@ test('rubric hash is stable, matches the stripped template and changes with the 
   assert.notEqual(judge.rubricHash(`${text}\nOne more rule.`), judge.rubricHash());
 });
 
-test('judge rubric defines every rating and keeps unverifiable claims neutral', () => {
+test('judge rubric defines every rating, defaults to send_as_is and keeps unverifiable claims neutral', () => {
   const text = judge.rubric();
   for (const rating of ['send_as_is:', 'needs_edits:', 'wrong:']) assert.ok(text.includes(rating), rating);
-  assert.match(text, /not the only\s+acceptable answer/);
+  assert.match(text, /not the standard the draft must match/);
+  assert.match(text, /send_as_is: the default/);
+  assert.match(text, /one concrete edit/);
+  assert.match(text, /Softening a direct or blunt tone is not a needed edit/);
   assert.match(text, /correct null never lowers the rating/);
 });
 
