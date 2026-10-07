@@ -38,6 +38,8 @@ Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never su
    node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples rate <pair_id> <rating> --reason "<owner's words>"
    ```
 
+   Pass the reason as a safely escaped literal argument: inside the double quotes, put a backslash before each `"`, `$`, `` ` `` and `\`.
+
    If the owner presses Enter to skip, run:
 
    ```sh

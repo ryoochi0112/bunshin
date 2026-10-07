@@ -341,6 +341,7 @@ test('examples pins sampling, resume, the owner-only A/B/C loop and the final st
     ['never suggest a reason', /Never suggest, complete or paraphrase a reason\./],
     ['never show previous rating', /Never show the previous rating\./],
     ['verbatim reason', /Pass the owner's words verbatim/],
+    ['reason shell escaping', /Pass the reason as a safely escaped literal argument: inside the double quotes, put a backslash before each `"`, `\$`, `` ` `` and `\\`\./],
     ['invalid reason asks again', /`examples: invalid reason`, show the error and ask again/],
     ['sample options', /Append `--n <n>` and\/or `--drafter <spec>` only when the user named them\./],
     ['resume offer', /If the CLI exits 1 with `rerun examples sample to resume`, show its error as-is and offer to resume by running the same command again\./],
