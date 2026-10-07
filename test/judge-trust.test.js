@@ -10,6 +10,8 @@ const evalRun = require('../lib/eval-run');
 const judge = require('../lib/judge');
 const evalCommand = require('../lib/commands/eval');
 const calibrateCommand = require('../lib/commands/calibrate');
+const examplesCommand = require('../lib/commands/examples');
+const examples = require('../lib/examples');
 
 const root = path.join(__dirname, '..');
 const verdict = { rating: 'send_as_is', reason: 'Synthetic reason.', claims: [], wrong_uncited: 0, language_match: true };
@@ -344,4 +346,68 @@ test('composeSystem appends examples after the rubric and leaves the rubric hash
   assert.equal(composed, `${judge.rubric()}\n\n${judge.examplesBlock(exampleRows())}`);
   assert.equal(judge.rubricHash(), before);
   assert.equal(judge.MAX_BLOCK_CHARS, 60000);
+});
+
+test('summary counts rows with a non-empty string reason and leaves the rows alone', () => {
+  const rows = twelveRows({ 2: 'REASON-A', 5: 'REASON-B', 11: 'REASON-C' });
+  rows[0].reason = ''; delete rows[3].reason;
+  const before = structuredClone(rows);
+  const value = examples.summary(rows);
+  assert.deepEqual(rows, before);
+  assert.deepEqual(Object.keys(value), ['hash', 'n', 'labels', 'reasons']);
+  assert.deepEqual([value.n, value.reasons], [12, 3]);
+  assert.deepEqual(value.labels, { send_as_is: 4, needs_edits: 4, wrong: 4 });
+  assert.equal(value.hash, judge.examplesHash(judge.examplesBlock(rows)));
+  assert.equal(examples.summary(twelveRows()).reasons, 0);
+  assert.equal(examples.summary([]).reasons, 0);
+});
+
+// Writes a 12-example set rated send_as_is with no reasons.
+function writeExampleSet(dir) {
+  const at = '2026-10-07T00:00:00.000Z';
+  const chosen = examples.selectSet(dir, { seed: '0123456789abcdef', n: 12 });
+  store.writeJson(dir, 'judge-examples/set.json', { format_version: 1, seed: '0123456789abcdef', n: 12,
+    pair_ids: chosen.map((pair) => pair.id), drafter: { host: 'fake', model: null }, created_at: at });
+  store.writeJsonl(dir, 'judge-examples/examples.jsonl', chosen.map((pair, i) => ({ pair_id: pair.id, layer: pair.layer, position: i + 1,
+    question: { author: pair.question.author, text: `Example question ${i + 1}.` }, context: [{ author: 'ann', text: `Example context ${i + 1}.` }],
+    reference_answer: `Example answer ${i + 1}.`, draft: `Example draft ${i + 1}.`,
+    drafter: { host: 'fake', model: null }, drafted_at: at })));
+  store.writeJsonl(dir, 'judge-examples/ratings.jsonl', chosen.map((pair) => ({ pair_id: pair.id, rating: 'send_as_is', rated_at: at })));
+  return chosen.map((pair) => pair.id);
+}
+
+test('AC7: adding, editing or removing a reason breaks trust; unchanged reasons inherit it', async (t) => {
+  const { home, dir } = fixture(t);
+  const ids = writeExampleSet(dir);
+  const rate = async (...args) => {
+    const result = io(home);
+    assert.equal(await examplesCommand.run(['rate', ...args, '--persona', dir], result.value), 0, result.out.stderr);
+  };
+  await rate(ids[0], 'send_as_is', '--reason', 'tone matches the thread');
+  const calibrated = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+  rateAll(dir, calibrated.run_id, 'send_as_is');
+  padRatings(dir, calibrated.run_id);
+  const trustedHash = store.readJson(dir, `evals/${calibrated.run_id}/run.json`).judge_examples.hash;
+  const ratingsFile = path.join(dir, 'judge-examples', 'ratings.jsonl');
+  const original = fs.readFileSync(ratingsFile);
+  const cases = {
+    unchanged: async () => {},
+    '(f) add a reason': () => rate(ids[1], 'send_as_is', '--reason', 'answers the right deadline'),
+    '(g) edit a reason': () => rate(ids[0], 'send_as_is', '--reason', 'tone matches, wording differs'),
+    '(h) remove a reason': () => rate(ids[0], 'send_as_is', '--no-reason'),
+  };
+  for (const [name, change] of Object.entries(cases)) {
+    fs.writeFileSync(ratingsFile, original);
+    await change();
+    const later = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+    const hash = store.readJson(dir, `evals/${later.run_id}/run.json`).judge_examples.hash;
+    assert.equal(await evalCommand.run(['report', '--run', later.run_id], io(home).value), 0);
+    const report = store.readJson(dir, `evals/${later.run_id}/report.json`);
+    if (name === 'unchanged') {
+      assert.deepEqual([name, hash, report.judge_trust, report.trust_from], [name, trustedHash, 'trusted', calibrated.run_id]);
+    } else {
+      assert.notEqual(hash, trustedHash, name);
+      assert.deepEqual([name, report.judge_trust, report.trust_from], [name, 'uncalibrated', null]);
+    }
+  }
 });

@@ -201,7 +201,7 @@ test('ready refuses incomplete sets and returns rated rows', (t) => {
   assert.equal(rows[0].rating, 'send_as_is');
   assert.equal(rows[0].draft, all[0].draft);
   const summary = examples.summary(rows);
-  assert.deepEqual(summary, { hash: judge.examplesHash(judge.examplesBlock(rows)), n: 12, labels: { send_as_is: 5, needs_edits: 6, wrong: 1 } });
+  assert.deepEqual(summary, { hash: judge.examplesHash(judge.examplesBlock(rows)), n: 12, labels: { send_as_is: 5, needs_edits: 6, wrong: 1 }, reasons: 0 });
   assert.equal(Object.values(summary.labels).reduce((a, b) => a + b, 0), 12);
   const drafted = rows.map((r, i) => (i === 3 ? { ...r, draft: 'Another draft.' } : r));
   assert.notEqual(examples.summary(drafted).hash, summary.hash);

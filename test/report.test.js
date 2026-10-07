@@ -10,6 +10,9 @@ const report = require('../lib/report');
 const store = require('../lib/store');
 const command = require('../lib/commands/eval');
 const hosts = require('../lib/hosts');
+const evalRun = require('../lib/eval-run');
+const examples = require('../lib/examples');
+const examplesCommand = require('../lib/commands/examples');
 
 const root = path.join(__dirname, '..');
 const persona = store.readJson(path.join(root, 'sample', 'persona'), 'persona.json');
@@ -83,6 +86,50 @@ test('judge examples line shows counts and vote size, or none', () => {
   assert.equal(at(render({})), 'judge examples: none · 1-call vote');
   const value = report.build({ ...input(), run: { ...run, judge_examples: { n: 2, labels }, judge_votes: 3 } });
   assert.deepEqual([value.judge_examples.n, value.judge_votes], [2, 3]);
+});
+
+test('judge examples line counts reasons when run.json records them; legacy runs keep the old line', () => {
+  const render = (extra) => report.renderMarkdown(report.build({ ...input(), run: { ...run, ...extra } })).split('\n');
+  const at = (lines) => lines[lines.indexOf(lines.find((line) => line.startsWith('drafter: '))) + 1];
+  const labels = { send_as_is: 11, needs_edits: 1, wrong: 0 };
+  assert.equal(at(render({ judge_examples: { hash: 'aaaaaaaaaaaaaaaa', n: 12, labels, reasons: 3 }, judge_votes: 3 })),
+    'judge examples: 12 (send_as_is 11 · needs_edits 1 · wrong 0 · reasons 3) · 3-call vote');
+  assert.equal(at(render({ judge_examples: { hash: 'aaaaaaaaaaaaaaaa', n: 12, labels, reasons: 0 }, judge_votes: 3 })),
+    'judge examples: 12 (send_as_is 11 · needs_edits 1 · wrong 0 · reasons 0) · 3-call vote');
+  assert.equal(at(render({ judge_examples: { hash: 'aaaaaaaaaaaaaaaa', n: 12, labels }, judge_votes: 3 })),
+    'judge examples: 12 (send_as_is 11 · needs_edits 1 · wrong 0) · 3-call vote');
+  const value = report.build({ ...input(), run: { ...run, judge_examples: { hash: 'aaaaaaaaaaaaaaaa', n: 12, labels, reasons: 3 }, judge_votes: 3 } });
+  assert.deepEqual(value.judge_examples, { hash: 'aaaaaaaaaaaaaaaa', n: 12, labels, reasons: 3 });
+});
+
+test('AC8: a report after 3 marker reasons counts them and contains no reason text', async (t) => {
+  const { home, dir } = fixture(t);
+  const at = '2026-10-07T00:00:00.000Z';
+  const chosen = examples.selectSet(dir, { seed: '0123456789abcdef', n: 12 });
+  store.writeJson(dir, 'judge-examples/set.json', { format_version: 1, seed: '0123456789abcdef', n: 12,
+    pair_ids: chosen.map((pair) => pair.id), drafter: { host: 'fake', model: null }, created_at: at });
+  store.writeJsonl(dir, 'judge-examples/examples.jsonl', chosen.map((pair, i) => ({ pair_id: pair.id, layer: pair.layer, position: i + 1,
+    question: { author: pair.question.author, text: `Example question ${i + 1}.` }, context: [{ author: 'ann', text: `Example context ${i + 1}.` }],
+    reference_answer: `Example answer ${i + 1}.`, draft: `Example draft ${i + 1}.`, drafter: { host: 'fake', model: null }, drafted_at: at })));
+  const markers = ['REPORT-REASON-A', 'REPORT-REASON-B', 'REPORT-REASON-C'];
+  for (const [i, pair] of chosen.entries()) {
+    const args = ['rate', pair.id, i === 4 ? 'needs_edits' : 'send_as_is', ...(i < 3 ? ['--reason', markers[i]] : []), '--persona', dir];
+    const out = { write() {} };
+    assert.equal(await examplesCommand.run(args, { env: { BUNSHIN_HOME: home }, stdout: out, stderr: out }), 0);
+  }
+  const adapters = { get(host) { return { async run(input) {
+    return { text: input.tools === 'none' ? JSON.stringify({ rating: 'send_as_is', reason: 'Synthetic reason.', claims: [], wrong_uncited: 0, language_match: true }) : 'Synthetic draft.', model: `${host}-model` };
+  } }; } };
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters });
+  const shown = await cli(['report', '--run', result.run_id, '--persona', dir], home);
+  assert.equal(shown.code, 0, shown.stderr);
+  const markdown = fs.readFileSync(path.join(dir, 'evals', result.run_id, 'report.md'), 'utf8');
+  const json = fs.readFileSync(path.join(dir, 'evals', result.run_id, 'report.json'), 'utf8');
+  assert.ok(markdown.split('\n').some((line) => line === 'judge examples: 12 (send_as_is 11 · needs_edits 1 · wrong 0 · reasons 3) · 3-call vote'), markdown);
+  assert.equal(JSON.parse(json).judge_examples.reasons, 3);
+  for (const marker of markers) {
+    for (const text of [markdown, json, shown.stdout]) assert.ok(!text.includes(marker), marker);
+  }
 });
 
 test('launch-bar table uses all persona thresholds and only the selected basis', () => {

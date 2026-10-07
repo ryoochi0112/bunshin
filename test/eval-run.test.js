@@ -418,6 +418,36 @@ test('AC3: owner reasons set through examples rate reach every judge system exac
   }
 });
 
+
+// Every file under dir whose bytes contain marker, relative to dir.
+function filesContaining(dir, marker) {
+  return fs.readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile())
+    .map((entry) => path.relative(dir, path.join(entry.parentPath ?? entry.path, entry.name)))
+    .filter((file) => fs.readFileSync(path.join(dir, file)).includes(marker)).sort();
+}
+
+test('AC9: owner reasons are stored only in judge-examples/ratings.jsonl after status, eval run and report', async (t) => {
+  const dir = fixture(t);
+  const { rows } = writeExamples(dir, 9);
+  const markers = ['PRIVACY-REASON-A', 'PRIVACY-REASON-B', 'PRIVACY-REASON-C'];
+  const bunshin = (args) => spawnSync(process.execPath, [path.join(root, 'bin', 'bunshin.js'), ...args, '--persona', dir], { cwd: root, encoding: 'utf8' });
+  rows.slice(9).forEach((row, i) => {
+    const result = bunshin(['examples', 'rate', row.pair_id, labels[(9 + i) % 3], '--reason', markers[i]]);
+    assert.equal(result.status, 0, result.stderr);
+  });
+  const status = bunshin(['examples', 'status']);
+  assert.equal(status.status, 0, status.stderr);
+  const adapters = recording();
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: adapters });
+  assert.ok(adapters.calls.some((call) => call.tools === 'none' && call.system.includes(markers[0])), 'the judge saw the reasons');
+  const shown = await cli(['report', '--run', result.run_id, '--persona', dir]);
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.ok(fs.existsSync(path.join(dir, 'evals', result.run_id, 'report.md')));
+  for (const marker of markers) {
+    for (const output of [status.stdout, status.stderr, shown.stdout, shown.stderr]) assert.ok(!output.includes(marker), marker);
+    assert.deepEqual(filesContaining(dir, marker), [path.join('judge-examples', 'ratings.jsonl')], marker);
+  }
+});
 function verdict(rating, wrong) {
   return { rating, reason: `Reason ${rating} ${wrong}.`, wrong_uncited: wrong, language_match: wrong === 0,
     claims: Array.from({ length: wrong }, (_, i) => ({ text: `Wrong ${i}.`, cited: false, correct: false })) };
