@@ -604,3 +604,55 @@ test('500 held-out answers against a 200 kB file scan in under two seconds', () 
   assert.deepEqual(findings.map(({ name, id }) => ({ name, id })), [{ name: 'large.md', id: 'heldout-499' }]);
   assert.ok(elapsed < 2000, `Scan took ${Math.round(elapsed)} ms; expected under 2000 ms.`);
 });
+
+test('cited source permalinks do not match private text that quotes the same link', (t) => {
+  const link = 'https://chat.example.invalid/thread/build-one';
+  const quoting = pair('heldout-one', `Context is in ${link} for this decision.`);
+  const dir = fixture(t, [quoting]);
+  const pairs = store.readJsonl(dir, 'pairs.jsonl');
+  pairs[0].question.text = `Earlier thread: ${link}`;
+  store.writeJsonl(dir, 'pairs.jsonl', pairs);
+  assert.doesNotThrow(() => check.checkDraft(dir, draft()));
+  assert.deepEqual(check.runChecks(dir).findings, []);
+});
+
+test('masking a cited permalink keeps statement copies of the quoting text refused', (t) => {
+  const dir = fixture(t, [pair('heldout-one', 'Context is in https://chat.example.invalid/thread/build-one for this decision.')]);
+  const value = draft();
+  value.voice[0].statement = 'thread/build-one for this decision.';
+  assert.throws(() => check.checkDraft(dir, value), (error) => {
+    assert.ok(error.findings.some(({ id, message }) => id === 'heldout-one'
+      && message === 'Held-out answer window. In trait voice-one.'));
+    return true;
+  });
+});
+
+test('a permalink that differs from its source pair is still scanned', (t) => {
+  const dir = fixture(t);
+  const value = draft();
+  value.voice[0].evidence[0].permalink = 'https://chat.example.invalid/abcdefghijklmnopqrstuvwxyz0123456789';
+  store.writeJson(dir, 'identity.json', value);
+  store.writeText(dir, 'identity.md', identity.render({ ...value, display_name: 'Sample Person' }));
+  assert.ok(check.runChecks(dir).findings.some(({ id, message }) => id === 'heldout-one'
+    && message === 'Held-out answer window.'));
+});
+
+test('a short or non-URL build permalink is never masked, so copied private text is still refused', (t) => {
+  for (const link of ['e', 'not a url but long enough to pass a length check', 'ftp://chat.example.invalid/thread/build-one']) {
+    const answer = 'This fictional held-out answer is long enough to leak if copied.';
+    const dir = fixture(t, [pair('heldout-one', answer)]);
+    const stored = store.readJsonl(dir, 'pairs.jsonl');
+    stored[0].permalink = link;
+    store.writeJsonl(dir, 'pairs.jsonl', stored);
+    const value = draft();
+    value.voice[0].statement = answer;
+    value.voice[0].evidence[0].permalink = link;
+    assert.throws(() => check.checkDraft(dir, value), (error) => {
+      assert.ok(error.findings.some(({ id }) => id === 'heldout-one'), `not refused for permalink ${link}`);
+      return true;
+    });
+    store.writeJson(dir, 'identity.json', value);
+    store.writeText(dir, 'identity.md', identity.render({ ...value, display_name: 'Sample Person' }));
+    assert.ok(check.runChecks(dir).findings.some(({ id }) => id === 'heldout-one'), `check passed for permalink ${link}`);
+  }
+});
