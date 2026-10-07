@@ -89,7 +89,7 @@ test('readSet is null when absent and reports status', (t) => {
   assert.equal(state.set.n, 12);
   assert.deepEqual(state.examples.map((e) => e.position), Array.from({ length: 12 }, (_, i) => i + 1));
   assert.equal(state.ratings[chosen[0].id].rating, 'needs_edits');
-  assert.deepEqual(state.status, { n: 12, drafted: 12, rated: 2, unrated: chosen.slice(2).map((p) => p.id), labels: { send_as_is: 0, needs_edits: 2, wrong: 0 } });
+  assert.deepEqual(state.status, { n: 12, drafted: 12, rated: 2, unrated: chosen.slice(2).map((p) => p.id), labels: { send_as_is: 0, needs_edits: 2, wrong: 0 }, needsReason: [chosen[0].id, chosen[1].id] });
 });
 
 test('readSet sorts examples by position', (t) => {
@@ -262,4 +262,20 @@ test('readSet throws on a hand-written bad reason; ready passes reason string or
   assert.equal(rows[3].reason, null);
   assert.equal(rows[0].rating, 'wrong');
   assert.equal(rows.every((r) => r.reason === null || typeof r.reason === 'string'), true);
+});
+
+test('needsReason lists rated ids in position order whose latest row has no own reason key', (t) => {
+  const { dir } = setup(t);
+  const chosen = writeSet(dir);
+  const ids = chosen.map((p) => p.id);
+  const append = (row) => store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { ...row, rated_at: '2026-01-01T00:00:00Z' });
+  assert.deepEqual(examples.readSet(dir).status.needsReason, []);
+  append({ pair_id: ids[3], rating: 'wrong' });
+  append({ pair_id: ids[1], rating: 'wrong', reason: null });
+  append({ pair_id: ids[0], rating: 'wrong', reason: 'because' });
+  append({ pair_id: ids[2], rating: 'wrong' });
+  assert.deepEqual(examples.readSet(dir).status.needsReason, [ids[2], ids[3]]);
+  append({ pair_id: ids[2], rating: 'wrong', reason: null });
+  append({ pair_id: ids[0], rating: 'wrong' });
+  assert.deepEqual(examples.readSet(dir).status.needsReason, [ids[0], ids[3]]);
 });
