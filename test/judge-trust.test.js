@@ -219,3 +219,49 @@ test('eval CLI accepts --rejudge-from and lists it in usage', async (t) => {
   assert.equal(await evalCommand.run(['run', '--rejudge-from', '2026-10-20-01'], missing.value), 1);
   assert.match(missing.out.stderr, /unknown source run/);
 });
+
+const exampleRows = () => [
+  { position: 1, pair_id: 'PAIRID1', permalink: 'https://example.invalid/PERMA', rated_at: '2020-01-01T00:00:00Z', drafted_at: 'DRAFTEDAT', drafter: 'DRAFTERX', layer: 'LAYERX',
+    question: { author: 'asker', text: 'QMARK1' }, context: [{ author: 'ann', text: 'CMARK1' }], reference_answer: 'RMARK1', draft: 'DMARK1', rating: 'send_as_is' },
+  { position: 2, pair_id: 'PAIRID2', question: { author: 'asker', text: 'QMARK2' }, context: [{ author: 'bob', text: 'CMARK2' }], reference_answer: 'RMARK2', draft: 'DMARK2', rating: 'wrong' },
+];
+
+test('examplesBlock renders only the five fields per example', () => {
+  const block = judge.examplesBlock(exampleRows());
+  for (const marker of ['QMARK1', 'CMARK1', 'RMARK1', 'DMARK1', 'QMARK2', 'CMARK2', 'RMARK2', 'DMARK2']) {
+    assert.equal(block.split(marker).length - 1, 1, marker);
+  }
+  assert.ok(block.startsWith(judge.examplesTemplate()));
+  assert.ok(block.includes('## Example 1\n') && block.includes('## Example 2\n'));
+  assert.ok(block.includes('Owner rating: send_as_is') && block.includes('Owner rating: wrong'));
+  assert.ok(block.includes('Context:\nann: CMARK1'));
+  for (const leak of ['PAIRID', 'PERMA', 'pair_id', 'permalink', '2020-01-01', 'DRAFTEDAT', 'DRAFTERX', 'LAYERX']) assert.ok(!block.includes(leak), leak);
+});
+
+test('examplesBlock orders by position without mutating the input', () => {
+  const reversed = exampleRows().reverse();
+  const block = judge.examplesBlock(reversed);
+  assert.ok(block.indexOf('## Example 1') < block.indexOf('## Example 2'));
+  assert.deepEqual(reversed.map((r) => r.position), [2, 1]);
+});
+
+test('examplesHash is 16 hex, stable and sensitive to draft and rating', () => {
+  const rows = exampleRows();
+  const hash = judge.examplesHash(judge.examplesBlock(rows));
+  assert.match(hash, /^[0-9a-f]{16}$/);
+  assert.equal(hash, judge.examplesHash(judge.examplesBlock(exampleRows())));
+  const draft = exampleRows(); draft[1].draft = 'changed';
+  const rating = exampleRows(); rating[0].rating = 'needs_edits';
+  assert.notEqual(hash, judge.examplesHash(judge.examplesBlock(draft)));
+  assert.notEqual(hash, judge.examplesHash(judge.examplesBlock(rating)));
+});
+
+test('composeSystem appends examples after the rubric and leaves the rubric hash alone', () => {
+  const before = judge.rubricHash();
+  assert.equal(judge.composeSystem(null), judge.rubric());
+  const composed = judge.composeSystem(exampleRows());
+  assert.ok(composed.startsWith(judge.rubric()));
+  assert.equal(composed, `${judge.rubric()}\n\n${judge.examplesBlock(exampleRows())}`);
+  assert.equal(judge.rubricHash(), before);
+  assert.equal(judge.MAX_BLOCK_CHARS, 60000);
+});
