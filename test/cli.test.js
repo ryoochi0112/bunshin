@@ -24,6 +24,13 @@ test('help lists version and its summary', async () => {
   assert.match(output.read().stdout, /version\s+Print the Bunshin version/);
 });
 
+test('help lists examples and its summary', async () => {
+  const output = createIo();
+
+  assert.equal(await main(['--help'], output.io), 0);
+  assert.match(output.read().stdout, /examples\s+Draft and rate judge examples from build pairs/);
+});
+
 test('no arguments prints help', async () => {
   const output = createIo();
 
