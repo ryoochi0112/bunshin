@@ -341,6 +341,7 @@ test('examples pins sampling, resume, the owner-only A/B/C loop and the final st
     ['dash means skip', /A reply of exactly `-` means skip; run `--no-reason`\./],
     ['never suggest a reason', /Never suggest, complete or paraphrase a reason\./],
     ['never show previous rating', /Never show the previous rating\./],
+    ['no told-rated-before', /Never show the previous rating\. Do not tell the owner that an item was rated before\./],
     ['verbatim reason', /Pass the owner's words verbatim/],
     ['reason shell escaping', /Pass the reason as a safely escaped literal argument: inside the double quotes, put a backslash before each `"`, `\$`, `` ` `` and `\\`\./],
     ['invalid reason asks again', /`examples: invalid reason`, show the error and ask again/],

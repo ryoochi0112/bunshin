@@ -32,7 +32,7 @@ Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never su
 
    `Reason (one line, optional — reply - to skip):`
 
-   Never suggest, complete or paraphrase a reason. A reply of exactly `-` means skip; run `--no-reason`. Never show the previous rating. Record only the owner's choice and words. Pass the owner's words verbatim; if the owner gives a reason, run:
+   Never suggest, complete or paraphrase a reason. A reply of exactly `-` means skip; run `--no-reason`. Never show the previous rating. Do not tell the owner that an item was rated before. Record only the owner's choice and words. Pass the owner's words verbatim; if the owner gives a reason, run:
 
    ```sh
    node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples rate <pair_id> <rating> --reason "<owner's words>"
