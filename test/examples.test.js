@@ -23,7 +23,7 @@ function row(pair, position) {
 }
 function writeSet(dir, n = 12) {
   const chosen = examples.selectSet(dir, { seed, n });
-  store.writeJson(dir, 'judge-examples/set.json', { format_version: 1, seed, n, drafter: { host: 'fake', model: null }, created_at: at });
+  store.writeJson(dir, 'judge-examples/set.json', { format_version: 1, seed, n, pair_ids: chosen.map((pair) => pair.id), drafter: { host: 'fake', model: null }, created_at: at });
   store.writeJsonl(dir, 'judge-examples/examples.jsonl', chosen.map((pair, i) => row(pair, i + 1)));
   return chosen;
 }
@@ -104,9 +104,14 @@ test('readSet rejects held-out and unassigned example ids', (t) => {
   const chosen = writeSet(dir);
   const pairs = store.readJsonl(dir, 'pairs.jsonl');
   const rows = chosen.map((pair, i) => row(pair, i + 1));
+  const good = store.readJson(dir, 'judge-examples/set.json');
+  // The set pins the id, so only the build-split check can reject it.
+  const pin = (id) => store.writeJson(dir, 'judge-examples/set.json', { ...good, pair_ids: [...good.pair_ids.slice(0, 11), id] });
+  pin('sample-10');
   rows[11] = row(pairs.find((p) => p.id === 'sample-10'), 12);
   store.writeJsonl(dir, 'judge-examples/examples.jsonl', rows);
   assert.throws(() => examples.readSet(dir), { message: 'examples: pair sample-10 is not in the build split' });
+  pin('sample-99');
   rows[11] = { ...row(chosen[11], 12), pair_id: 'sample-99' };
   store.writeJsonl(dir, 'judge-examples/examples.jsonl', rows);
   assert.throws(() => examples.readSet(dir), { message: 'examples: pair sample-99 is not in the build split' });
@@ -138,6 +143,44 @@ test('readSet rejects invalid sets, examples and ratings', (t) => {
     store.writeJsonl(dir, 'judge-examples/ratings.jsonl', [{ pair_id: base.pair_id, rating: 'wrong', rated_at: at, ...bad }]);
     assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example rating' }, JSON.stringify(bad));
   }
+});
+
+test('readSet rejects a set.json whose pair_ids are missing, short, long, duplicated or malformed', (t) => {
+  const { dir } = setup(t);
+  const chosen = writeSet(dir);
+  const good = store.readJson(dir, 'judge-examples/set.json');
+  assert.deepEqual(good.pair_ids, chosen.map((p) => p.id));
+  const { pair_ids: _omitted, ...without } = good;
+  const bads = {
+    missing: without,
+    short: { ...good, pair_ids: good.pair_ids.slice(0, 11) },
+    long: { ...good, pair_ids: [...good.pair_ids, 'sample-16'] },
+    duplicate: { ...good, pair_ids: [...good.pair_ids.slice(0, 11), good.pair_ids[0]] },
+    'bad id': { ...good, pair_ids: [...good.pair_ids.slice(0, 11), 'Bad Id'] },
+    'non-string id': { ...good, pair_ids: [...good.pair_ids.slice(0, 11), 7] },
+    'not an array': { ...good, pair_ids: good.pair_ids.join(',') },
+  };
+  for (const [name, bad] of Object.entries(bads)) {
+    store.writeJson(dir, 'judge-examples/set.json', bad);
+    assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example set' }, name);
+  }
+  store.writeJson(dir, 'judge-examples/set.json', good);
+  assert.equal(examples.readSet(dir).examples.length, 12);
+});
+
+test('readSet rejects an example whose pair_id is not set.pair_ids[position - 1]', (t) => {
+  const { dir } = setup(t);
+  const chosen = writeSet(dir);
+  const rows = chosen.map((pair, i) => row(pair, i + 1));
+  const spare = examples.eligible(dir).pairs.find((p) => !chosen.some((c) => c.id === p.id));
+  // A build pair that is not pinned at all.
+  store.writeJsonl(dir, 'judge-examples/examples.jsonl', [...rows.slice(0, 11), row(spare, 12)]);
+  assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example' });
+  // A pinned id at the wrong position (swap 1 and 2).
+  store.writeJsonl(dir, 'judge-examples/examples.jsonl', [row(chosen[1], 1), row(chosen[0], 2)]);
+  assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example' });
+  store.writeJsonl(dir, 'judge-examples/examples.jsonl', rows);
+  assert.equal(examples.readSet(dir).examples.length, 12);
 });
 
 test('ready refuses incomplete sets and returns rated rows', (t) => {

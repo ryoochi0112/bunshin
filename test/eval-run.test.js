@@ -311,7 +311,7 @@ const labels = ['send_as_is', 'needs_edits', 'wrong'];
 function writeExamples(dir, rated = 12) {
   const chosen = examples.selectSet(dir, { seed: '0123456789abcdef', n: 12 });
   store.writeJson(dir, 'judge-examples/set.json', { format_version: 1, seed: '0123456789abcdef', n: 12,
-    drafter: { host: 'fake', model: null }, created_at: ratedAt });
+    pair_ids: chosen.map((pair) => pair.id), drafter: { host: 'fake', model: null }, created_at: ratedAt });
   const rows = chosen.map((pair, i) => ({ pair_id: pair.id, layer: pair.layer, position: i + 1,
     question: { author: pair.question.author, text: `QMARK-${i + 1}-Q` },
     context: [{ author: `author-${i + 1}`, text: `CMARK-${i + 1}-C` }],

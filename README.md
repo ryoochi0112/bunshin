@@ -70,8 +70,8 @@ From the repo root, create your private persona with `node bin/bunshin.js init <
 2. `/bunshin:interview` — answer one evidence-grounded question at a time, up to 15 per session.
 3. `/bunshin:diagnose` — resolve conflicts between observed behaviour and interview answers.
 4. `/bunshin:build` — start a fresh session after harvest, then commit an identity from build-set evidence only.
-5. `/bunshin:eval` — draft held-out answers, judge them and print a dated report. Use `--limit <n>` for a smaller run or `--judge <spec>` to select the judge.
-6. `/bunshin:examples` — optional: rate 12 build-split drafts so the judge is anchored to your ratings.
+5. `/bunshin:examples` — optional: rate 12 build-split drafts so the judge is anchored to your ratings; doing it before eval lets calibrate rate the anchored judge.
+6. `/bunshin:eval` — draft held-out answers, judge them and print a dated report. Use `--limit <n>` for a smaller run or `--judge <spec>` to select the judge.
 7. `/bunshin:calibrate` — rate about 30 drafts without seeing judge ratings; review judge agreement. Below 80% agreement, judge scores are untrusted and only your ratings count for the launch bar.
 8. `/bunshin:export` — write a standalone package; load the printed package path with `claude --plugin-dir <path>` in a fresh session.
 

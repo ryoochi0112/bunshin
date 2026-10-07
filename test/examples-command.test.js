@@ -107,6 +107,72 @@ test('a host error keeps earlier rows and a rerun drafts only the rest', async (
   assert.equal(examples.readSet(dir).examples.length, 12);
 });
 
+function growBuildPool(dir, count) {
+  const all = store.readJsonl(dir, 'pairs.jsonl');
+  const assignments = store.readJson(dir, 'split.json');
+  const extra = Array.from({ length: count }, (_, i) => {
+    const source = all[i % 2 ? 0 : 1];
+    return { ...source, id: `sample-9${i}`, layer: i % 2 ? 'knowledge' : 'judgment' };
+  });
+  store.writeJsonl(dir, 'pairs.jsonl', [...all, ...extra]);
+  for (const pair of extra) assignments.assignments[pair.id] = 'build';
+  store.writeJson(dir, 'split.json', assignments);
+  return extra;
+}
+
+test('a rerun after new build pairs arrive drafts the pinned ids at the pending positions only', async (t) => {
+  const { home, dir } = fixture(t);
+  const failing = await exec(home, ['sample', '--drafter', 'fake'], recording({ failOn: 5 }));
+  assert.equal(failing.code, 1);
+  const set = store.readJson(dir, 'judge-examples/set.json');
+  assert.equal(set.pair_ids.length, 12);
+  assert.equal(new Set(set.pair_ids).size, 12);
+  assert.equal(store.readJsonl(dir, 'judge-examples/examples.jsonl').length, 4);
+  growBuildPool(dir, 6);
+  const regrown = examples.selectSet(dir, { seed: set.seed, n: 12 }).map((pair) => pair.id);
+  const moved = regrown.map((id, index) => index >= 4 && id !== set.pair_ids[index]);
+  assert.ok(moved.some(Boolean), 'precondition: re-selection over the grown pool differs at a pending position');
+  const adapters = recording();
+  const rerun = await exec(home, ['sample', '--drafter', 'fake'], adapters);
+  assert.equal(rerun.code, 0, rerun.stderr);
+  assert.equal(adapters.calls.length, 8);
+  const rows = store.readJsonl(dir, 'judge-examples/examples.jsonl');
+  assert.deepEqual(rows.map((row) => row.position), Array.from({ length: 12 }, (_, i) => i + 1));
+  assert.deepEqual(rows.map((row) => row.pair_id), set.pair_ids);
+  assert.equal(new Set(rows.map((row) => row.pair_id)).size, 12);
+  assert.deepEqual(store.readJson(dir, 'judge-examples/set.json'), set);
+  assert.equal(examples.readSet(dir).examples.length, 12);
+  assert.equal((await exec(home, ['status'])).stdout, 'examples: 12/12 drafted · 0/12 rated (send_as_is 0 · needs_edits 0 · wrong 0)\n');
+});
+
+test('a rerun whose pinned pair left the build split fails and writes no row', async (t) => {
+  const { home, dir } = fixture(t);
+  await exec(home, ['sample', '--drafter', 'fake'], recording({ failOn: 5 }));
+  const set = store.readJson(dir, 'judge-examples/set.json');
+  const split = store.readJson(dir, 'split.json');
+  split.assignments[set.pair_ids[6]] = 'heldout';
+  store.writeJson(dir, 'split.json', split);
+  const adapters = recording();
+  const rerun = await exec(home, ['sample', '--drafter', 'fake'], adapters);
+  assert.equal(rerun.code, 1);
+  assert.equal(rerun.stderr, `examples: pair ${set.pair_ids[6]} is not in the build split\n`);
+  assert.equal(adapters.calls.length, 0);
+  assert.equal(store.readJsonl(dir, 'judge-examples/examples.jsonl').length, 4);
+});
+
+test('a rerun whose pinned pair was removed from the pairs fails and writes no row', async (t) => {
+  const { home, dir } = fixture(t);
+  await exec(home, ['sample', '--drafter', 'fake'], recording({ failOn: 5 }));
+  const set = store.readJson(dir, 'judge-examples/set.json');
+  store.writeJsonl(dir, 'pairs.jsonl', store.readJsonl(dir, 'pairs.jsonl').filter((pair) => pair.id !== set.pair_ids[9]));
+  const adapters = recording();
+  const rerun = await exec(home, ['sample', '--drafter', 'fake'], adapters);
+  assert.equal(rerun.code, 1);
+  assert.equal(rerun.stderr, `examples: pair ${set.pair_ids[9]} is not in the build split\n`);
+  assert.equal(adapters.calls.length, 0);
+  assert.equal(store.readJsonl(dir, 'judge-examples/examples.jsonl').length, 4);
+});
+
 test('sample --n 14 fails on the eligible count and writes nothing', async (t) => {
   const { home, dir } = fixture(t);
   const adapters = recording();
