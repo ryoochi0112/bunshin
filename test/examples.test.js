@@ -221,3 +221,45 @@ test('readSet honours the store path guard on a symlinked judge-examples', (t) =
   fs.symlinkSync(outside, path.join(dir, 'judge-examples'), 'dir');
   assert.throws(() => examples.readSet(dir), { message: 'Persona file path must stay inside the persona directory.' });
 });
+
+test('validReason: string, single line, non-blank, at most 200 code points', () => {
+  const jp200 = '日'.repeat(200);
+  for (const good of ['tone ok, facts match', ' padded ', jp200, 'x'.repeat(200), '😀'.repeat(200), '--starts with dashes']) {
+    assert.equal(examples.validReason(good), true, good.slice(0, 20));
+  }
+  for (const bad of ['', '   ', '\t', 'a\nb', 'a\rb', '\n', '日'.repeat(201), '😀'.repeat(201), 3, null, undefined, {}, ['x'], true]) {
+    assert.equal(examples.validReason(bad), false, JSON.stringify(bad));
+  }
+});
+
+test('validateRating accepts an absent, null or valid reason and refuses anything else', () => {
+  const base = { pair_id: 'sample-01', rating: 'wrong', rated_at: at };
+  for (const ok of [{}, { reason: null }, { reason: 'fine' }, { reason: '日'.repeat(200) }]) {
+    assert.deepEqual(examples.validateRating({ ...base, ...ok }), [], JSON.stringify(ok).slice(0, 30));
+  }
+  for (const bad of [{ reason: 3 }, { reason: '' }, { reason: '  ' }, { reason: 'a\nb' }, { reason: '日'.repeat(201) }, { reason: undefined }, { reason: false }, { reason: {} }]) {
+    assert.deepEqual(examples.validateRating({ ...base, ...bad }), ['examples: invalid example rating'], JSON.stringify(bad));
+  }
+});
+
+test('readSet throws on a hand-written bad reason; ready passes reason string or null', (t) => {
+  const { dir } = setup(t);
+  const chosen = writeSet(dir);
+  for (const reason of [3, 'a\nb', '日'.repeat(201)]) {
+    store.writeJsonl(dir, 'judge-examples/ratings.jsonl', [{ pair_id: chosen[0].id, rating: 'wrong', reason, rated_at: at }]);
+    assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example rating' });
+  }
+  store.writeJsonl(dir, 'judge-examples/ratings.jsonl', []);
+  rate(dir, chosen.map((p) => p.id));
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: chosen[0].id, rating: 'wrong', reason: '日本語の理由', rated_at: at });
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: chosen[1].id, rating: 'wrong', reason: null, rated_at: at });
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: chosen[2].id, rating: 'wrong', reason: 'first', rated_at: at });
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: chosen[2].id, rating: 'wrong', rated_at: at });
+  const rows = examples.ready(dir);
+  assert.equal(rows[0].reason, '日本語の理由');
+  assert.equal(rows[1].reason, null);
+  assert.equal(rows[2].reason, null);
+  assert.equal(rows[3].reason, null);
+  assert.equal(rows[0].rating, 'wrong');
+  assert.equal(rows.every((r) => r.reason === null || typeof r.reason === 'string'), true);
+});
