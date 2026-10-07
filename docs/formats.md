@@ -425,7 +425,9 @@ After two invalid judge responses, the error row contains only the following fie
 
 `eval report` writes both files under `evals/<run_id>/`, replacing JSON first and Markdown second through atomic writes. Rerunning restores both files after interruption. Without `--run`, it selects the latest date and then numeric sequence. Deltas compare judge rates against the latest earlier run with a report.
 
-Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone. The bar applies `launch_bar.min_heldout`, `min_per_layer`, and `send_as_is`, plus zero knowledge wrong uncited facts.
+Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). A run without its own ratings inherits agreement from the latest run that has ratings and the same judge host, model, rubric hash and recorded judge models. Each new run records the rubric hash of `templates/judge.md` in `run.json`, so editing the rubric resets trust to `uncalibrated`. Runs made before the hash existed never share trust. An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone.
+
+`eval run --rejudge-from <run_id>` starts a new run that copies the source run's drafts and judges them with the current rubric. It never drafts. The owner already saw those drafts, so a re-judged run cannot be calibrated. `calibrate compare --run <run_id>` prints its agreement with the source run's ratings as a tuning-set check that never sets trust. The bar applies `launch_bar.min_heldout`, `min_per_layer`, and `send_as_is`, plus zero knowledge wrong uncited facts.
 
 | Field | Meaning |
 | --- | --- |
@@ -441,8 +443,11 @@ Judge statistics always appear. Their denominator excludes judge errors and draf
 | `delta` | Per-layer change in rounded percentage points; `null` without comparable rates. |
 | `drafter` | `host` and distinct recorded `models` list. |
 | `judge` | `host` and distinct recorded `models` list, including judge errors. |
+| `judge_rubric` | Judge rubric hash saved in the run, or `null` for older runs. |
+| `rejudged_from` | Source run whose drafts this run re-judged, or `null`. |
 | `judge_trust` | `trusted`, `untrusted`, or `uncalibrated`. |
 | `agreement` | `{match, rated}`, or `null` without calibration. |
+| `trust_from` | Run whose ratings supplied `agreement` when this run has none, or `null`. Runs with an unreported judge model never share trust. |
 | `basis` | `judge` when trusted, otherwise `owner_ratings`. |
 | `bar_n` | Valid case ratings counted for the selected launch-bar basis. |
 | `launch_bar` | `met`, `not_met`, or `sample_too_small`. |
@@ -494,8 +499,11 @@ Judge statistics always appear. Their denominator excludes judge errors and draf
       "fake"
     ]
   },
+  "judge_rubric": null,
+  "rejudged_from": null,
   "judge_trust": "uncalibrated",
   "agreement": null,
+  "trust_from": null,
   "basis": "owner_ratings",
   "bar_n": 0,
   "launch_bar": "sample_too_small",
