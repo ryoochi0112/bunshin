@@ -149,6 +149,54 @@ test('reports inherit trust only from a calibrated run with the same judge setup
   assert.equal(store.readJson(dir, `evals/${later.run_id}/report.json`).trust_from, null);
 });
 
+test('trust follows examples, votes and rubric: any single change or a legacy run breaks inheritance', async (t) => {
+  const { home, dir } = fixture(t);
+  const labels = { send_as_is: 2, needs_edits: 1, wrong: 0 };
+  const stamp = { judge_examples: { hash: 'aaaaaaaaaaaaaaaa', n: 3, labels }, judge_votes: 3 };
+  const calibrated = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+  rateAll(dir, calibrated.run_id, 'send_as_is');
+  padRatings(dir, calibrated.run_id);
+  const later = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+  const edit = (id, change) => {
+    const file = `evals/${id}/run.json`;
+    store.writeJson(dir, file, change(store.readJson(dir, file)));
+  };
+  const trustFrom = async () => {
+    assert.equal(await evalCommand.run(['report', '--run', later.run_id], io(home).value), 0);
+    return store.readJson(dir, `evals/${later.run_id}/report.json`);
+  };
+  for (const id of [calibrated.run_id, later.run_id]) edit(id, (run) => ({ ...run, ...stamp }));
+  const same = await trustFrom();
+  assert.deepEqual([same.judge_trust, same.trust_from], ['trusted', calibrated.run_id]);
+
+  const changes = {
+    rubric: (run) => ({ ...run, judge_rubric: '0000000000000000' }),
+    'draft edit': (run) => ({ ...run, judge_examples: { ...run.judge_examples, hash: 'bbbbbbbbbbbbbbbb' } }),
+    'rating edit': (run) => ({ ...run, judge_examples: { ...run.judge_examples, hash: 'bbbbbbbbbbbbbbbb', labels: { send_as_is: 1, needs_edits: 1, wrong: 1 } } }),
+    'example count': (run) => ({ ...run, judge_examples: { ...run.judge_examples, hash: 'bbbbbbbbbbbbbbbb', n: 4 } }),
+    'examples removed': (run) => ({ ...run, judge_examples: null }),
+    votes: (run) => ({ ...run, judge_votes: 1 }),
+  };
+  for (const [name, change] of Object.entries(changes)) {
+    const file = `evals/${later.run_id}/run.json`;
+    const original = store.readJson(dir, file);
+    edit(later.run_id, change);
+    const report = await trustFrom();
+    assert.deepEqual([name, report.judge_trust, report.trust_from], [name, 'uncalibrated', null]);
+    store.writeJson(dir, file, original);
+  }
+
+  // A legacy run (no judge_votes) neither inherits nor lends trust.
+  const legacy = (run) => { const { judge_votes: _, ...rest } = run; return rest; };
+  edit(later.run_id, legacy);
+  assert.equal((await trustFrom()).trust_from, null, 'legacy later run');
+  edit(later.run_id, (run) => ({ ...run, ...stamp }));
+  edit(calibrated.run_id, legacy);
+  assert.equal((await trustFrom()).trust_from, null, 'legacy lender');
+  edit(later.run_id, legacy);
+  assert.equal((await trustFrom()).trust_from, null, 'both legacy');
+});
+
 test('runs without a rubric hash or a reported judge model never share trust', async (t) => {
   const { home, dir } = fixture(t);
   const calibrated = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });

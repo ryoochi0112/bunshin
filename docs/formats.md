@@ -430,7 +430,7 @@ After two invalid judge responses, the error row contains only the following fie
 
 `eval report` writes both files under `evals/<run_id>/`, replacing JSON first and Markdown second through atomic writes. Rerunning restores both files after interruption. Without `--run`, it selects the latest date and then numeric sequence. Deltas compare judge rates against the latest earlier run with a report.
 
-Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). A run without its own ratings inherits agreement from the latest run that has ratings and the same judge host, model, rubric hash and recorded judge models. Each new run records the rubric hash of `templates/judge.md` in `run.json`, so editing the rubric resets trust to `uncalibrated`. Each new run also records `judge_examples` and `judge_votes` in `run.json`. `judge_examples` is `null` when the persona has no owner example set; otherwise it is `{hash, n, labels: {send_as_is, needs_edits, wrong}}` for the examples placed in the judge system text. `judge_votes` is the integer number of judge calls per case, currently `3`. `eval run --run` refuses to resume when either value differs from the current examples or vote count. Runs made before the hash existed never share trust. An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone.
+Judge statistics always appear. Their denominator excludes judge errors and drafts without judgments. Trust requires at least 30 calibration ratings and agreement at least `launch_bar.min_agreement` (spec §7 rule 4). A run without its own ratings inherits agreement from the latest run that has ratings and the same judge host, model, rubric hash, examples hash, vote count and recorded judge models. Each new run records the rubric hash of `templates/judge.md` in `run.json`, so editing the rubric resets trust to `uncalibrated`. Each new run also records `judge_examples` and `judge_votes` in `run.json`. `judge_examples` is `null` when the persona has no owner example set; otherwise it is `{hash, n, labels: {send_as_is, needs_edits, wrong}}` for the examples placed in the judge system text. `judge_votes` is the integer number of judge calls per case, currently `3`. `eval run --run` refuses to resume when either value differs from the current examples or vote count. Runs made before the hash or `judge_votes` existed never share trust. An untrusted or uncalibrated judge leaves the launch bar dependent on owner ratings for this run alone.
 
 `eval run --rejudge-from <run_id>` starts a new run that copies the source run's drafts and judges them with the current rubric. It never drafts. The owner already saw those drafts, so a re-judged run cannot be calibrated. `calibrate compare --run <run_id>` prints its agreement with the source run's ratings as a tuning-set check that never sets trust. The bar applies `launch_bar.min_heldout`, `min_per_layer`, and `send_as_is`, plus zero knowledge wrong uncited facts.
 
@@ -449,6 +449,8 @@ Judge statistics always appear. Their denominator excludes judge errors and draf
 | `drafter` | `host` and distinct recorded `models` list. |
 | `judge` | `host` and distinct recorded `models` list, including judge errors. |
 | `judge_rubric` | Judge rubric hash saved in the run, or `null` for older runs. |
+| `judge_examples` | Owner examples used by the judge, `{hash, n, labels}`, or `null` for none. |
+| `judge_votes` | Judge calls per case saved in the run; `1` for older runs. |
 | `rejudged_from` | Source run whose drafts this run re-judged, or `null`. |
 | `judge_trust` | `trusted`, `untrusted`, or `uncalibrated`. |
 | `agreement` | `{match, rated}`, or `null` without calibration. |
@@ -505,6 +507,8 @@ Judge statistics always appear. Their denominator excludes judge errors and draf
     ]
   },
   "judge_rubric": null,
+  "judge_examples": null,
+  "judge_votes": 1,
   "rejudged_from": null,
   "judge_trust": "uncalibrated",
   "agreement": null,
@@ -529,10 +533,11 @@ judgment:  send as-is 100%
 overall:   send as-is 100%  → sample too small
 judge agreement with Sora Aoki: not calibrated → uncalibrated
 drafter: fake fake · judge: fake fake
+judge examples: none · 1-call vote
 launch bar basis: Sora Aoki's ratings (0 rated)
 ```
 
-The Markdown layout has seven required lines: persona/version/date, drafted counts, knowledge judge rate and wrong uncited facts, judgment judge rate, overall judge rate and bar status, calibration agreement and trust, then drafter and judge hosts and models. Percentages use `Math.round(100 * rate)`; empty rates print `n/a`. Only per-layer rates have deltas, formatted `(+8)`, `(-3)`, or `(+0)`. Models are distinct recorded values joined by `, `; `null` or an empty list prints `default`.
+The Markdown layout has eight required lines: persona/version/date, drafted counts, knowledge judge rate and wrong uncited facts, judgment judge rate, overall judge rate and bar status, calibration agreement and trust, then drafter and judge hosts and models, then judge examples and vote count (`judge examples: <n> (send_as_is a · needs_edits b · wrong c) · <votes>-call vote`, or `judge examples: none · <votes>-call vote`). Percentages use `Math.round(100 * rate)`; empty rates print `n/a`. Only per-layer rates have deltas, formatted `(+8)`, `(-3)`, or `(+0)`. Models are distinct recorded values joined by `, `; `null` or an empty list prints `default`.
 
 After those lines, show only applicable lines in this order: `judge errors: <n> (excluded from rates)` when nonzero, `not judged: <n>` when nonzero, `not drafted: <n>` when nonzero, `incomplete: <done> of <n> held-out cases drafted and judged — no launch-bar claim` when `complete` is false, and `launch bar basis: <display_name>'s ratings (<n> rated)` whenever the basis is owner ratings. The file ends with one newline.
 
