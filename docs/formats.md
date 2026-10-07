@@ -578,3 +578,89 @@ Each line in `calibration/<run_id>/ratings.jsonl` records an owner rating. Re-ra
 ```json
 {"case_id":"sample-09","run_id":"2026-10-20-01","rating":"wrong","wrong_uncited_fact":true,"rated_at":"2026-10-20T00:00:00.000Z"}
 ```
+
+## Judge examples: `judge-examples/`
+
+`bunshin examples` keeps the owner's judge examples in `<persona>/judge-examples/`. The files hold the owner's ratings and reasons, so they stay in the persona directory and are never copied into a report. Every example uses a build-split pair; held-out pairs never appear. The examples below use invented ids and text.
+
+| File | Contents |
+| --- | --- |
+| `set.json` | The pinned 12-item set. Written once by `examples sample`. |
+| `examples.jsonl` | One drafted example per set item, positions 1 to 12. |
+| `ratings.jsonl` | Owner ratings for set items and extras. Re-rating appends a row. |
+| `balance.json` | Marks that balancing started. Written once by `examples balance`. |
+| `extras.jsonl` | Extra drafted examples served while balancing, positions 13 and up. |
+
+### `set.json`
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | Integer `1`. |
+| `seed` | 16 lowercase hex characters that fix the selection. |
+| `n` | Number of set items, normally `12`. |
+| `pair_ids` | The `n` pair ids in position order. |
+| `drafter` | `{host, model}` that drafted the set; `model` may be `null`. |
+| `created_at` | ISO timestamp. |
+
+```jsonl
+{"format_version":1,"seed":"0123456789abcdef","n":12,"pair_ids":["pair-01","pair-02"],"drafter":{"host":"fake","model":null},"created_at":"2026-10-07T00:00:00.000Z"}
+```
+
+(The example shows two ids for brevity; a real `pair_ids` has `n` entries.)
+
+### `examples.jsonl` and `extras.jsonl`
+
+Both files use the same row. `examples.jsonl` rows are the set items. `extras.jsonl` rows are extras drafted on demand while balancing is open; they continue the positions at `n + 1` in the order they were served.
+
+| Field | Meaning |
+| --- | --- |
+| `pair_id` | Build-split pair id. |
+| `position` | Position in the set (1 to `n`) or among the extras (`n + 1` and up). |
+| `layer` | `knowledge` or `judgment`. |
+| `question` | `{author, text}` of the question. |
+| `context` | List of `{author, text}` messages before the question. |
+| `reference_answer` | The owner's real answer, shown to the judge as the reference. |
+| `draft` | The twin's draft that the owner rated. |
+| `drafter` | `{host, model}` that wrote the draft. |
+| `drafted_at` | ISO timestamp. |
+
+```jsonl
+{"pair_id":"pair-01","position":1,"layer":"judgment","question":{"author":"ann","text":"Should we ship the sample change this week?"},"context":[],"reference_answer":"Yes, ship it.","draft":"Yes, ship it this week.","drafter":{"host":"fake","model":null},"drafted_at":"2026-10-07T00:00:00.000Z"}
+```
+
+### `ratings.jsonl`
+
+The latest row per `pair_id` wins.
+
+| Field | Meaning |
+| --- | --- |
+| `pair_id` | A set item or a drafted extra. |
+| `rating` | `send_as_is`, `needs_edits`, or `wrong`. |
+| `reason` | Optional. One line of at most 200 characters, stored as written, or `null`. A blank or missing reason counts as no reason. |
+| `rated_at` | ISO timestamp. |
+
+```jsonl
+{"pair_id":"pair-01","rating":"needs_edits","reason":"Too long for a chat reply.","rated_at":"2026-10-07T00:00:00.000Z"}
+```
+
+### `balance.json`
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | Integer `1`. |
+| `seed` | 16 lowercase hex characters that fix the order of extras. |
+| `started_at` | ISO timestamp when balancing started. |
+
+```jsonl
+{"format_version":1,"seed":"fedcba9876543210","started_at":"2026-10-07T00:00:00.000Z"}
+```
+
+Balancing state is never stored. Phase, counts and the shown set are derived from `set.json`, `examples.jsonl`, `extras.jsonl`, `ratings.jsonl` and `balance.json` each time they are read.
+
+### What the judge sees
+
+Without `balance.json`, the judge sees all `n` set items, each with its latest rating and reason, and `eval run` needs every item drafted and rated.
+
+With `balance.json`, an *N-example* is an item whose latest rating is `needs_edits` with a reason, and an *S-example* is one whose latest rating is `send_as_is` with a reason. Let `k` be the smaller of 6, the number of N-examples and the number of S-examples. The judge sees the first `k` N-examples and the first `k` S-examples, ordered by position (set items first, then extras in the order served). Each keeps its own position. Items rated `wrong`, items without a reason and the surplus are not shown. Extras stop when there are 6 N-examples, when 24 extras are rated or when no eligible build pair remains. A blind pass then asks again for a reason on set items rated `send_as_is` without one, until there are `k` S-examples.
+
+`eval run` refuses while balancing is open (`eval run: judge examples not ready — balancing open (run examples next)`), when `k` is `0` and when the shown examples exceed 60000 characters. Any change to which items are shown, or to their ratings or reasons, changes the examples hash and so resets judge trust to `uncalibrated`.

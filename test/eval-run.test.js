@@ -522,3 +522,127 @@ test('--run refuses a changed example set or vote count', async (t) => {
   writeExamples(dir);
   await assert.rejects(evalRun.run(dir, { runId: result.run_id, hosts: recording() }), { message: 'eval run: judge examples differ from run' });
 });
+
+// ---- balanced judge examples ----
+const OLD = '2026-01-01T00:00:00.000Z';
+
+// spec: one code per item in position order (at least 12): N needs_edits + reason, S send_as_is + reason,
+// W wrong, R send_as_is without reason. Items past 12 are extras; the build pool is exactly set + extras.
+function writeBalanced(dir, spec, { balance = true, drafts = {} } = {}) {
+  writeExamples(dir, 0);
+  const set = store.readJson(dir, 'judge-examples/set.json');
+  const setRows = store.readJsonl(dir, 'judge-examples/examples.jsonl');
+  const spare = examples.eligible(dir).pairs.filter((pair) => !set.pair_ids.includes(pair.id));
+  const extraCount = spec.length - 12;
+  const all = store.readJsonl(dir, 'pairs.jsonl');
+  const split = store.readJson(dir, 'split.json');
+  const grown = Array.from({ length: Math.max(0, extraCount - spare.length) }, (_, i) => ({ ...all[0], id: `sample-9${i}`, layer: 'judgment' }));
+  store.writeJsonl(dir, 'pairs.jsonl', [...all, ...grown]);
+  for (const pair of grown) split.assignments[pair.id] = 'build';
+  store.writeJson(dir, 'split.json', split);
+  const ids = [...spare.map((pair) => pair.id), ...grown.map((pair) => pair.id)].slice(0, extraCount);
+  const extras = ids.map((id, i) => ({ ...setRows[0], pair_id: id, position: 13 + i,
+    question: { author: 'ann', text: `QMARK-${13 + i}-Q` }, context: [{ author: 'bo', text: `CMARK-${13 + i}-C` }],
+    reference_answer: `RMARK-${13 + i}-R`, draft: `DMARK-${13 + i}-D` }));
+  const rows = [...setRows, ...extras].map((row) => (drafts[row.position] ? { ...row, draft: drafts[row.position] } : row));
+  store.writeJsonl(dir, 'judge-examples/examples.jsonl', rows.slice(0, 12));
+  if (extras.length) store.writeJsonl(dir, 'judge-examples/extras.jsonl', rows.slice(12));
+  const rating = { N: 'needs_edits', S: 'send_as_is', W: 'wrong', R: 'send_as_is' };
+  store.writeJsonl(dir, 'judge-examples/ratings.jsonl', spec.map((code, i) => ({ pair_id: rows[i].pair_id, rating: rating[code],
+    ...(code === 'N' || code === 'S' ? { reason: `REASON-${i + 1}-${code}` } : {}), rated_at: OLD })));
+  if (balance) store.writeJson(dir, 'judge-examples/balance.json', { format_version: 1, seed: 'fedcba9876543210', started_at: ratedAt });
+  return rows;
+}
+
+const judgeSystems = (adapters) => adapters.calls.filter((call) => call.tools === 'none').map((call) => call.system);
+const count = (text, needle) => text.split(needle).length - 1;
+
+test('AC5: a done 7N/9S/2W/3-no-reason balance shows only the first 6 N and 6 S, all with reasons', async (t) => {
+  const dir = fixture(t);
+  const spec = [...'NSWRNSNSNSNSNSRNSWRSS'];
+  assert.equal(spec.length, 21);
+  const rows = writeBalanced(dir, spec);
+  assert.equal(examples.readSet(dir).balance.phase, 'done');
+  const adapters = recording();
+  await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters });
+  const systems = judgeSystems(adapters);
+  assert.ok(systems.length >= 3);
+  const shown = [1, 5, 7, 9, 11, 13, 2, 6, 8, 10, 12, 14];
+  for (const system of systems) {
+    assert.equal(count(system, 'Owner rating: needs_edits'), 6);
+    assert.equal(count(system, 'Owner rating: send_as_is'), 6);
+    assert.equal(count(system, 'Owner reason:'), 12);
+    assert.deepEqual([...system.matchAll(/^## Example (\d+)$/gm)].map((m) => Number(m[1])), [...shown].sort((a, b) => a - b));
+    for (const row of rows) assert.equal(system.includes(row.draft), shown.includes(row.position), `position ${row.position}`);
+    assert.ok(system.includes('Owner rating: needs_edits\nOwner reason: REASON-13-N'));
+    assert.ok(system.includes('Owner rating: send_as_is\nOwner reason: REASON-14-S'));
+  }
+  const config = store.readJson(dir, `evals/${fs.readdirSync(path.join(dir, 'evals'))[0]}/run.json`);
+  assert.deepEqual(config.judge_examples, examples.summary(examples.ready(dir)));
+  assert.deepEqual([config.judge_examples.n, config.judge_examples.reasons, config.judge_examples.labels], [12, 12, { send_as_is: 6, needs_edits: 6, wrong: 0 }]);
+});
+
+test('AC6: the 6/6 report line is the golden judge examples line', async (t) => {
+  const dir = fixture(t);
+  writeBalanced(dir, [...'NSWRNSNSNSNSNSRNSWRSS']);
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: recording() });
+  const shown = await cli(['report', '--run', result.run_id, '--persona', dir]);
+  assert.equal(shown.code, 0, shown.stderr);
+  const report = fs.readFileSync(path.join(dir, 'evals', result.run_id, 'report.md'), 'utf8');
+  assert.ok(report.split('\n').includes('judge examples: 12 (send_as_is 6 · needs_edits 6 · wrong 0 · reasons 12) · 3-call vote'), report);
+});
+
+test('AC5: a done balance with 4 N-examples shows a 4/4 block', async (t) => {
+  const dir = fixture(t);
+  const rows = writeBalanced(dir, [...'NSNSNSNSWWRRW']);
+  const state = examples.readSet(dir);
+  assert.deepEqual([state.balance.phase, state.balance.k, state.balance.stop], ['done', 4, 'pool']);
+  const adapters = recording();
+  await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters });
+  for (const system of judgeSystems(adapters)) {
+    assert.equal(count(system, 'Owner rating: needs_edits'), 4);
+    assert.equal(count(system, 'Owner rating: send_as_is'), 4);
+    assert.equal(count(system, 'Owner reason:'), 8);
+    for (const row of rows) assert.equal(system.includes(row.draft), row.position <= 8, `position ${row.position}`);
+  }
+});
+
+test('AC7: an open balance refuses every run mode with no judge call and no write', async (t) => {
+  const dir = fixture(t);
+  writeBalanced(dir, [...'NSNSSSSSSSSS']);
+  assert.equal(examples.readSet(dir).balance.phase, 'extras');
+  store.writeJsonl(dir, 'cases.jsonl', []);
+  const adapters = recording();
+  const message = 'eval run: judge examples not ready — balancing open (run examples next)';
+  for (const opts of [{ drafter: 'fake', judge: 'fake' }, { runId: '2026-10-20-01' }, { rejudgeFrom: '2026-10-20-01' }]) {
+    await assert.rejects(evalRun.run(dir, { ...opts, hosts: adapters }), { message });
+  }
+  assert.equal(adapters.calls.length, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+  const shown = await cli(['run', '--drafter', 'fake', '--judge', 'fake', '--persona', dir]);
+  assert.equal(shown.code, 1);
+  assert.ok(shown.stderr.includes(message), shown.stderr);
+});
+
+test('AC7: a set without balance.json keeps today\'s rows and examples hash', (t) => {
+  const dir = fixture(t);
+  writeExamples(dir);
+  assert.deepEqual(examples.summary(examples.ready(dir)), { hash: 'd313fd2c07d2fcab', n: 12,
+    labels: { send_as_is: 4, needs_edits: 4, wrong: 4 }, reasons: 0 });
+  assert.equal(examples.ready(dir).length, 12);
+});
+
+test('a done balance with no N or no S example, or an oversized block, is refused before any call', async (t) => {
+  for (const [spec, drafts, message] of [
+    [[...'WWWWWWWWWWWWW'], {}, 'eval run: judge examples not ready — balanced set is empty'],
+    [[...'NNNNNNSSSSSSS'], { 1: 'x'.repeat(70000) }, 'eval run: judge examples exceed 60000 chars'],
+  ]) {
+    const dir = fixture(t);
+    writeBalanced(dir, spec, { drafts });
+    assert.equal(examples.readSet(dir).balance.phase, 'done');
+    const adapters = recording();
+    await assert.rejects(evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: adapters }), { message });
+    assert.equal(adapters.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+  }
+});

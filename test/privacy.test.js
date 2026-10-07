@@ -212,3 +212,59 @@ test('gitignore protects every private persona file and permits sample files des
     assert.equal(code.stderr, '');
   }
 });
+
+test('balanced example reasons stay under judge-examples after balance, eval run and report', async (t) => {
+  const evalRun = require('../lib/eval-run');
+  const evalCommand = require('../lib/commands/eval');
+  const examplesCommand = require('../lib/commands/examples');
+  const examples = require('../lib/examples');
+  const home = temporaryDirectory(t);
+  const dir = path.join(home, 'fictional');
+  fs.cpSync(path.join(root, 'sample', 'persona'), dir, { recursive: true });
+  const pairs = store.readJsonl(dir, 'pairs.jsonl');
+  const split = store.readJson(dir, 'split.json');
+  const grown = Array.from({ length: 6 }, (_, i) => ({ ...pairs[i % 2 ? 0 : 1], id: `sample-9${i}`, layer: i % 2 ? 'knowledge' : 'judgment' }));
+  store.writeJsonl(dir, 'pairs.jsonl', [...pairs, ...grown]);
+  for (const pair of grown) split.assignments[pair.id] = 'build';
+  store.writeJson(dir, 'split.json', split);
+
+  const calls = [];
+  const hosts = { get() { return { async run(input) {
+    calls.push(input);
+    const verdict = { rating: 'send_as_is', reason: 'Synthetic reason.', claims: [], wrong_uncited: 0, language_match: true };
+    return { text: input.tools === 'none' ? JSON.stringify(verdict) : `Synthetic draft ${calls.length}.`, model: 'fake-model' };
+  } }; } };
+  const exec = async (argv) => {
+    const out = { stdout: '', stderr: '' };
+    const code = await examplesCommand.run(argv, { env: { BUNSHIN_HOME: home }, hosts,
+      stdout: { write(text) { out.stdout += text; } }, stderr: { write(text) { out.stderr += text; } } });
+    assert.equal(code, 0, out.stderr);
+    return out.stdout;
+  };
+  await exec(['sample', '--drafter', 'fake']);
+  const set = examples.readSet(dir).examples;
+  const roles = ['needs_edits', 'needs_edits', 'needs_edits', ...Array(6).fill('send_as_is'), 'wrong', 'wrong', 'wrong'];
+  for (const [i, row] of set.entries()) {
+    await exec(['rate', row.pair_id, roles[i], ...(roles[i] === 'wrong' ? ['--no-reason'] : ['--reason', `set reason ${i + 1}`])]);
+  }
+  await exec(['balance']);
+  const markers = ['PRIVACY-BALANCE-A', 'PRIVACY-BALANCE-B', 'PRIVACY-BALANCE-C'];
+  for (const marker of markers) {
+    const id = (await exec(['next'])).match(/^item \d+ — (\S+) /)[1];
+    await exec(['rate', id, 'needs_edits', '--reason', marker]);
+  }
+  assert.equal(examples.readSet(dir).balance.phase, 'done');
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', limit: 1, hosts });
+  assert.ok(calls.some((call) => call.tools === 'none' && markers.every((marker) => call.system.includes(marker))), 'the judge saw the reasons');
+  let reported = '';
+  assert.equal(await evalCommand.run(['report', '--run', result.run_id, '--persona', dir], { env: { BUNSHIN_HOME: home },
+    stdout: { write(text) { reported += text; } }, stderr: { write(text) { reported += text; } } }), 0, reported);
+  assert.ok(fs.existsSync(path.join(dir, 'evals', result.run_id, 'report.md')));
+  for (const marker of markers) {
+    assert.ok(!reported.includes(marker), marker);
+    const found = fs.readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile())
+      .map((entry) => path.relative(dir, path.join(entry.parentPath ?? entry.path, entry.name)))
+      .filter((file) => fs.readFileSync(path.join(dir, file)).includes(marker));
+    assert.deepEqual(found, [path.join('judge-examples', 'ratings.jsonl')], marker);
+  }
+});

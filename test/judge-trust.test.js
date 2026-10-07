@@ -411,3 +411,60 @@ test('AC7: adding, editing or removing a reason breaks trust; unchanged reasons 
     }
   }
 });
+
+test('AC8: completing a balance, or editing a shown S-example reason, changes the keys and breaks trust', async (t) => {
+  const { home, dir } = fixture(t);
+  const ids = writeExampleSet(dir);
+  // 7 N and 5 S, all with reasons: the balance shows 5 N (positions 1, 3, 5, 7, 9) and 5 S, and hides N 11 and 12.
+  const codes = [...'NSNSNSNSNSNN'];
+  store.writeJsonl(dir, 'judge-examples/ratings.jsonl', ids.map((id, i) => ({ pair_id: id,
+    rating: codes[i] === 'N' ? 'needs_edits' : 'send_as_is', reason: `Reason ${i + 1}`, rated_at: '2026-01-01T00:00:00.000Z' })));
+  const spare = examples.eligible(dir).pairs.filter((pair) => !ids.includes(pair.id));
+  assert.equal(spare.length, 1);
+  const rows = store.readJsonl(dir, 'judge-examples/examples.jsonl');
+  const calibrated = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+  rateAll(dir, calibrated.run_id, 'send_as_is');
+  padRatings(dir, calibrated.run_id);
+  const trustedHash = store.readJson(dir, `evals/${calibrated.run_id}/run.json`).judge_examples.hash;
+  const ratingsFile = path.join(dir, 'judge-examples', 'ratings.jsonl');
+  const balanceFile = path.join(dir, 'judge-examples', 'balance.json');
+  const originalRatings = fs.readFileSync(ratingsFile);
+  // The spare build pair is the only candidate: draft it as extra 13 and rate it wrong so the pool is exhausted.
+  store.writeJsonl(dir, 'judge-examples/extras.jsonl', [{ ...rows[0], pair_id: spare[0].id, position: 13, draft: 'Extra draft 13.' }]);
+  const exhaust = () => store.appendJsonl(dir, 'judge-examples/ratings.jsonl', { pair_id: spare[0].id, rating: 'wrong', rated_at: '2026-01-01T00:00:00.000Z' });
+  const extrasFile = path.join(dir, 'judge-examples', 'extras.jsonl');
+  const extrasBytes = fs.readFileSync(extrasFile);
+  fs.rmSync(extrasFile);
+  const balance = () => {
+    store.writeJson(dir, 'judge-examples/balance.json', { format_version: 1, seed: 'fedcba9876543210', started_at: '2026-10-07T00:00:00.000Z' });
+    fs.writeFileSync(extrasFile, extrasBytes);
+    exhaust();
+  };
+  const cases = {
+    'before balance (same set)': async () => {},
+    '(i) balance completed': async () => balance(),
+    '(j) shown S-example reason edited': async () => {
+      balance();
+      const result = io(home);
+      assert.equal(await examplesCommand.run(['rate', ids[1], 'send_as_is', '--reason', 'A different reason', '--persona', dir], result.value), 0, result.out.stderr);
+    },
+  };
+  const hashes = {};
+  for (const [name, change] of Object.entries(cases)) {
+    fs.writeFileSync(ratingsFile, originalRatings);
+    fs.rmSync(balanceFile, { force: true });
+    fs.rmSync(extrasFile, { force: true });
+    await change();
+    const later = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+    hashes[name] = store.readJson(dir, `evals/${later.run_id}/run.json`).judge_examples.hash;
+    assert.equal(await evalCommand.run(['report', '--run', later.run_id], io(home).value), 0);
+    const report = store.readJson(dir, `evals/${later.run_id}/report.json`);
+    if (name.startsWith('before')) {
+      assert.deepEqual([name, hashes[name], report.judge_trust, report.trust_from], [name, trustedHash, 'trusted', calibrated.run_id]);
+    } else {
+      assert.notEqual(hashes[name], trustedHash, name);
+      assert.deepEqual([name, report.judge_trust, report.trust_from], [name, 'uncalibrated', null]);
+    }
+  }
+  assert.notEqual(hashes['(j) shown S-example reason edited'], hashes['(i) balance completed']);
+});
