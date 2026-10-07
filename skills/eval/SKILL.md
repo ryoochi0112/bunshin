@@ -24,10 +24,18 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" eval run --run <run_id>
 
 Append the same named options and persona flag from the interrupted invocation. For any other non-zero exit, show the CLI error as-is and stop.
 
+Only when the user asks to re-judge an earlier run's drafts with the current judge rubric, run this instead of a fresh run:
+
+```sh
+node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" eval run --rejudge-from <run_id>
+```
+
+It drafts nothing. Pass only `--judge <spec>` and the persona flag when named. A resumed re-judge run uses `--run <run_id>` as above.
+
 The successful `eval run` output already includes `report.md`; present its Markdown as-is without editing or summarizing it. For a separate report view, run:
 
 ```sh
 node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" eval report
 ```
 
-Append `--run <run_id>` or `--persona <dir>` only when needed. After a successful report, use one sentence that repeats only the overall status word shown there—`MET`, `NOT MET`, or `sample too small`. If it says `sample too small` and the report shows an `incomplete:` line, say to run `eval run` without `--limit` (or resume with `--run <run_id>`). Otherwise, if it shows a `launch bar basis: … ratings` line, say to run `/bunshin:calibrate`. Otherwise, say that more held-out pairs are needed. Never restate a launch-bar result that the report does not show, and never calculate or infer rates yourself. Do not add or paraphrase judge reasons beyond what the CLI output shows.
+Append `--run <run_id>` or `--persona <dir>` only when needed. After a successful report, use one sentence that repeats only the overall status word shown there—`MET`, `NOT MET`, or `sample too small`. If it says `sample too small` and the report shows an `incomplete:` line, say to run `eval run` without `--limit` (or resume with `--run <run_id>`). Otherwise, if it shows a `re-judged drafts from run` line, say that this run cannot be calibrated, and that `calibrate compare --run <run_id>` gives a tuning-set check while a fresh `eval run` plus `/bunshin:calibrate` sets trust. Otherwise, if it shows a `launch bar basis: … ratings` line, say to run `/bunshin:calibrate`. Otherwise, say that more held-out pairs are needed. Never restate a launch-bar result that the report does not show, and never calculate or infer rates yourself. Do not add or paraphrase judge reasons beyond what the CLI output shows.
