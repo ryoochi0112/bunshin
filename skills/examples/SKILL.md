@@ -18,13 +18,21 @@ Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never su
 
    Append `--n <n>` and/or `--drafter <spec>` only when the user named them. Append `--persona <dir>` when the selected persona uses that flag. If the CLI exits 1 with `rerun examples sample to resume`, show its error as-is and offer to resume by running the same command again. For any other non-zero exit, show the CLI error as-is and stop.
 
-2. Repeat the following until `examples next` prints `all <n> items rated`:
+   When the owner asks to balance, first run:
+
+   ```sh
+   node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples balance
+   ```
+
+   Append `--persona <dir>` when the selected persona uses that flag, show its line, then say exactly once `An item without a reason is not used as an example.` before the first item, then continue with step 2. On a non-zero exit, show the CLI error as-is and stop.
+
+2. Repeat the following until `examples next` prints `all <n> items rated` or a line starting `examples: balanced set`:
 
    ```sh
    node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples next
    ```
 
-   Append `--persona <dir>` when the selected persona uses that flag. After the unrated items, `examples next` serves rated items again for the reason step; this is expected, so rate each one like any other item. Show the CLI item output as printed, one item at a time, then ask exactly:
+   Append `--persona <dir>` when the selected persona uses that flag. While balancing, `examples next` may call the drafter; if it exits 1 with `rerun examples next to resume`, show its error as-is and offer to resume by running `examples next` again. After the unrated items, `examples next` serves rated items again for the reason step; this is expected, so rate each one like any other item. Show the CLI item output as printed, one item at a time, then ask exactly:
 
    `A) send as-is  B) needs edits  C) wrong`
 
@@ -48,7 +56,7 @@ Never read `judgments.jsonl`. Never reveal or guess the judge's rating, never su
 
    Append `--persona <dir>` when the selected persona uses that flag. If the CLI refuses the reason with `examples: invalid reason`, show the error and ask again; this is the only exception to the last sentence of this step. If the owner stops, stop without rating the current item. On any non-zero exit, show the CLI error as-is and stop.
 
-3. After `examples next` prints that all items are rated, run:
+3. After `examples next` prints that all items are rated or a line starting `examples: balanced set`, run:
 
    ```sh
    node "${CLAUDE_PLUGIN_ROOT}/bin/bunshin.js" examples status

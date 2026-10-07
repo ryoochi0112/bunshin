@@ -333,6 +333,7 @@ test('examples pins sampling, resume, the owner-only A/B/C loop and the final st
     pinCommand(text, `${base}rate <pair_id> <rating> --no-reason`, 'examples rate --no-reason'),
     pinCommand(text, `${base}status`, 'examples status'),
   ];
+  pinCommand(text, `${base}balance`, 'examples balance');
   assert.ok(positions[0] < positions[1] && positions[1] < positions[2] && positions[2] < positions[4],
     'Sampling precedes next, rate, and the final status.');
   assert.ok(positions[3] < positions[4], 'Both rate forms precede the final status.');
@@ -350,6 +351,10 @@ test('examples pins sampling, resume, the owner-only A/B/C loop and the final st
     ['rerun continues at served item', /running the skill again continues at the next item `examples next` serves\./],
     ['re-pass is expected', /After the unrated items, `examples next` serves rated items again for the reason step; this is expected, so rate each one like any other item\./],
     ['loop completion', /Repeat the following until `examples next` prints `all <n> items rated`/],
+    ['no-reason rule', /say exactly once `An item without a reason is not used as an example\.` before the first item/],
+    ['balanced-set loop end', /prints `all <n> items rated` or a line starting `examples: balanced set`:/],
+    ['balance shows its line', /examples balance\n\s*```\n\s*Append `--persona <dir>` when the selected persona uses that flag, show its line/],
+    ['drafter resume', /`rerun examples next to resume`/],
     ['show one printed item', /Show the CLI item output as printed, one item at a time/],
     ['exact owner options', /^\s*`A\) send as-is  B\) needs edits  C\) wrong`\s*$/m],
     ['owner choice mapping', /Map the owner's choice A\/B\/C to `send_as_is`\/`needs_edits`\/`wrong`\./],
