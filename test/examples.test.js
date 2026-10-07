@@ -279,3 +279,226 @@ test('needsReason lists rated ids in position order whose latest row has no own 
   append({ pair_id: ids[0], rating: 'wrong' });
   assert.deepEqual(examples.readSet(dir).status.needsReason, [ids[0], ids[3]]);
 });
+
+// ---- balance state ----
+const bseed = 'abcdef0123456789';
+const started = '2026-10-08T00:00:00.000Z';
+const later = '2026-10-09T00:00:00.000Z';
+function grow(dir, count) {
+  const pairs = store.readJsonl(dir, 'pairs.jsonl');
+  const split = store.readJson(dir, 'split.json');
+  const base = pairs.find((p) => p.id === 'sample-01');
+  for (let i = 1; i <= count; i++) {
+    const id = `more-${String(i).padStart(2, '0')}`;
+    pairs.push({ ...base, id, layer: i % 2 ? 'knowledge' : 'judgment' });
+    split.assignments[id] = 'build';
+  }
+  store.writeJsonl(dir, 'pairs.jsonl', pairs);
+  store.writeJson(dir, 'split.json', split);
+}
+function startBalance(dir, at0 = started) {
+  store.writeJson(dir, 'judge-examples/balance.json', { format_version: 1, seed: bseed, started_at: at0 });
+}
+function candidates(dir) {
+  const state = examples.readSet(dir);
+  const base = new Set(state.set.pair_ids);
+  const drafted = new Set(state.extras.map((r) => r.pair_id));
+  const rows = examples.eligible(dir).pairs.filter((p) => !base.has(p.id)).map((p) => ({ case_id: p.id, layer: p.layer }));
+  return require('../lib/calibrate').select(rows, bseed, rows.length).map((r) => r.case_id).filter((id) => !drafted.has(id));
+}
+function addExtra(dir, id) {
+  const pair = store.readJsonl(dir, 'pairs.jsonl').find((p) => p.id === id);
+  const n = examples.readSet(dir).extras.length;
+  store.appendJsonl(dir, 'judge-examples/extras.jsonl', row(pair, 12 + n + 1));
+}
+function rateAs(dir, id, rating, reason, when = later) {
+  const r = { pair_id: id, rating, rated_at: when };
+  if (reason !== undefined) r.reason = reason;
+  store.appendJsonl(dir, 'judge-examples/ratings.jsonl', r);
+}
+function fixture(t, extraPool = 0) {
+  const ctx = setup(t);
+  grow(ctx.dir, extraPool);
+  writeSet(ctx.dir);
+  startBalance(ctx.dir);
+  return ctx;
+}
+test('no balance files: readSet gives extras [] and balance null', (t) => {
+  const { dir } = setup(t);
+  writeSet(dir);
+  const state = examples.readSet(dir);
+  assert.deepEqual(state.extras, []);
+  assert.equal(state.balance, null);
+  assert.equal(examples.QUOTA, 6);
+  assert.equal(examples.CAP, 24);
+});
+
+test('invalid balance.json throws', (t) => {
+  const { dir } = fixture(t);
+  store.writeJson(dir, 'judge-examples/balance.json', { format_version: 1, seed: 'xyz', started_at: started });
+  assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example set' });
+  store.writeJson(dir, 'judge-examples/balance.json', { format_version: 1, seed: bseed, started_at: 'nope' });
+  assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example set' });
+});
+
+test('invalid extras.jsonl cases throw', (t) => {
+  const { dir } = fixture(t, 6);
+  const [a, b] = candidates(dir);
+  const pair = (id) => store.readJsonl(dir, 'pairs.jsonl').find((p) => p.id === id);
+  const bad = (rows) => { store.writeJsonl(dir, 'judge-examples/extras.jsonl', rows); assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example' }); };
+  bad([{ ...row(pair(a), 13), draft: '' }]);
+  bad([row(pair(a), 14)]);
+  bad([row(pair(a), 13), row(pair(b), 15)]);
+  bad([row(pair('sample-01'), 13)]);
+  bad([row(pair('sample-10'), 13)]);
+  bad([row(pair(a), 13), row(pair(a), 14)]);
+  fs.rmSync(path.join(dir, 'judge-examples/balance.json'));
+  store.writeJsonl(dir, 'judge-examples/extras.jsonl', [row(pair(a), 13)]);
+  assert.throws(() => examples.readSet(dir), { message: 'examples: invalid example' });
+});
+
+test('drafting extras in sequence alternates knowledge and judgment', (t) => {
+  const { dir } = fixture(t, 6);
+  const layerOf = Object.fromEntries(store.readJsonl(dir, 'pairs.jsonl').map((p) => [p.id, p.layer]));
+  const layers = [];
+  for (let i = 0; i < 6; i++) {
+    const serve = examples.readSet(dir).balance.serve;
+    assert.equal(serve.kind, 'draft');
+    layers.push(layerOf[serve.pair.id]);
+    addExtra(dir, serve.pair.id);
+    rateAs(dir, serve.pair.id, 'send_as_is', 's');
+  }
+  const expect = layers[0] === 'knowledge' ? ['knowledge', 'judgment'] : ['judgment', 'knowledge'];
+  assert.deepEqual(layers, [...expect, ...expect, ...expect]);
+  assert.equal(layers[0], 'knowledge');
+});
+
+test('candidate order is seed-stable and excludes set, held-out and oversized pairs', (t) => {
+  const one = fixture(t, 6);
+  const two = fixture(t, 6);
+  const a = examples.readSet(one.dir).balance.serve;
+  const b = examples.readSet(two.dir).balance.serve;
+  assert.equal(a.kind, 'draft');
+  assert.equal(a.pair.id, b.pair.id);
+  assert.equal(a.position, 13);
+  assert.equal(a.pair.id, candidates(one.dir)[0]);
+  const ids = candidates(one.dir);
+  assert.equal(ids.length, 7);
+  const set = new Set(examples.readSet(one.dir).set.pair_ids);
+  for (const id of ids) { assert.ok(!set.has(id)); assert.ok(!['sample-10', 'sample-12', 'sample-13'].includes(id)); }
+});
+
+test('phase extras, serve order: drafted-unrated extra, draft, then top-up', (t) => {
+  const { dir } = fixture(t, 6);
+  let state = examples.readSet(dir);
+  assert.deepEqual([state.balance.phase, state.balance.stop, state.balance.k], ['extras', null, 0]);
+  const [a] = candidates(dir);
+  addExtra(dir, a);
+  const b = candidates(dir)[0];
+  state = examples.readSet(dir);
+  assert.equal(state.extras.length, 1);
+  assert.equal(state.balance.serve.kind, 'extra');
+  assert.equal(state.balance.serve.row.pair_id, a);
+  rateAs(dir, a, 'needs_edits', 'tone');
+  state = examples.readSet(dir);
+  assert.equal(state.balance.X, 1);
+  assert.equal(state.balance.N, 1);
+  assert.equal(state.balance.serve.kind, 'draft');
+  assert.equal(state.balance.serve.position, 14);
+  assert.equal(state.balance.serve.pair.id, b);
+  // status keeps meaning over the 12 set items
+  assert.equal(state.status.rated, 0);
+});
+
+test('quota stop via an extra, top-up open and closed, k recomputed', (t) => {
+  const { dir } = fixture(t, 6);
+  const set = examples.readSet(dir).set.pair_ids;
+  for (let i = 0; i < 5; i++) rateAs(dir, set[i], 'needs_edits', `r${i}`, at);
+  for (let i = 5; i < 8; i++) rateAs(dir, set[i], 'send_as_is', undefined, at);
+  rateAs(dir, set[8], 'send_as_is', 'good', at);
+  let state = examples.readSet(dir);
+  assert.equal(state.balance.phase, 'extras');
+  const [a] = candidates(dir);
+  addExtra(dir, a);
+  rateAs(dir, a, 'needs_edits', 'sixth');
+  state = examples.readSet(dir);
+  const b = state.balance;
+  assert.deepEqual([b.N, b.S, b.X, b.k, b.phase, b.stop], [6, 1, 1, 1, 'topup', 'quota']);
+  assert.equal(b.serve.kind, 'topup');
+  assert.equal(b.serve.row.pair_id, set[5]);
+  // set[5] re-rated after started_at without reason: no longer in C
+  rateAs(dir, set[5], 'send_as_is');
+  rateAs(dir, set[6], 'send_as_is');
+  rateAs(dir, set[7], 'send_as_is');
+  state = examples.readSet(dir);
+  assert.equal(state.balance.phase, 'done');
+  assert.equal(state.balance.serve, null);
+  assert.equal(state.balance.stop, 'quota');
+  // a top-up item becomes S: k grows
+  rateAs(dir, set[5], 'send_as_is', 'now with reason');
+  assert.equal(examples.readSet(dir).balance.k, 2);
+});
+
+test('cap stop: 24 rated extras, 4 needs_edits', (t) => {
+  const { dir } = fixture(t, 30);
+  for (let i = 0; i < 24; i++) {
+    const [a] = candidates(dir);
+    addExtra(dir, a);
+    if (i < 4) rateAs(dir, a, 'needs_edits', 'x'); else rateAs(dir, a, 'send_as_is', i % 2 ? 'ok' : undefined);
+  }
+  const b = examples.readSet(dir).balance;
+  assert.deepEqual([b.X, b.N, b.stop], [24, 4, 'cap']);
+  assert.notEqual(b.phase, 'extras');
+});
+
+test('pool stop: 5-pair extra pool exhausted', (t) => {
+  const { dir } = fixture(t, 4);
+  for (let i = 0; i < 5; i++) {
+    const [a] = candidates(dir);
+    addExtra(dir, a);
+    rateAs(dir, a, i < 3 ? 'needs_edits' : 'send_as_is', 'why');
+  }
+  const b = examples.readSet(dir).balance;
+  assert.deepEqual([b.stop, b.phase, b.N, b.S, b.k], ['pool', 'done', 3, 2, 2]);
+  assert.equal(b.serve, null);
+});
+
+test('balancedRows takes first k of each by position', (t) => {
+  const { dir } = fixture(t, 10);
+  const set = examples.readSet(dir).set.pair_ids;
+  // set: N at 0..3 (4), S at 4..7 with reason, 8 wrong (no reason) ; extras add N and S
+  for (let i = 0; i < 4; i++) rateAs(dir, set[i], 'needs_edits', 'n', at);
+  for (let i = 4; i < 8; i++) rateAs(dir, set[i], 'send_as_is', 's', at);
+  rateAs(dir, set[8], 'needs_edits', undefined, at);
+  rateAs(dir, set[9], 'send_as_is', undefined, at);
+  const ids = [];
+  for (let i = 0; i < 6; i++) { const [a] = candidates(dir); addExtra(dir, a); ids.push(a); }
+  rateAs(dir, ids[0], 'needs_edits', 'n'); rateAs(dir, ids[1], 'needs_edits', 'n'); rateAs(dir, ids[2], 'needs_edits', 'n');
+  rateAs(dir, ids[3], 'send_as_is', 's'); rateAs(dir, ids[4], 'send_as_is', 's'); rateAs(dir, ids[5], 'send_as_is', 's');
+  let state = examples.readSet(dir);
+  assert.deepEqual([state.balance.N, state.balance.S, state.balance.k], [7, 7, 6]);
+  let rows = examples.balancedRows(state);
+  assert.equal(rows.length, 12);
+  assert.deepEqual(rows.map((r) => r.position), [...rows.map((r) => r.position)].sort((x, y) => x - y));
+  assert.equal(rows.filter((r) => r.rating === 'needs_edits').length, 6);
+  assert.ok(!rows.some((r) => r.pair_id === ids[2]), 'seventh N excluded');
+  assert.ok(rows.every((r) => typeof r.reason === 'string'));
+  // fewer: drop to 4 N via rewriting ratings
+  fs.rmSync(path.join(dir, 'judge-examples/ratings.jsonl'));
+  for (let i = 0; i < 4; i++) rateAs(dir, set[i], 'needs_edits', 'n', at);
+  for (let i = 4; i < 9; i++) rateAs(dir, set[i], 'send_as_is', 's', at);
+  state = examples.readSet(dir);
+  rows = examples.balancedRows(state);
+  assert.equal(state.balance.k, 4);
+  assert.equal(rows.length, 8);
+});
+
+test('statusLine goldens', () => {
+  const st = (o) => ({ balance: { X: 0, N: 0, S: 0, k: 0, phase: 'extras', stop: null, ...o } });
+  assert.equal(examples.statusLine(st({ X: 9, N: 4, S: 2 })), 'examples: balancing — extras 9 of 24 rated · needs_edits with reason 4 of 6 · send_as_is with reason 2');
+  assert.equal(examples.statusLine(st({ k: 6, phase: 'done', stop: 'quota' })), 'examples: balanced set 6/6 (send_as_is 6 · needs_edits 6) — run eval run');
+  assert.equal(examples.statusLine(st({ k: 4, phase: 'done', stop: 'cap' })), 'examples: balanced set 4/4 (send_as_is 4 · needs_edits 4) — cap reached — run eval run');
+  assert.equal(examples.statusLine(st({ k: 4, phase: 'done', stop: 'pool' })), 'examples: balanced set 4/4 (send_as_is 4 · needs_edits 4) — no more build pairs — run eval run');
+  assert.equal(examples.statusLine(st({ k: 4, phase: 'done', stop: 'quota' })), 'examples: balanced set 4/4 (send_as_is 4 · needs_edits 4) — too few send_as_is reasons — run eval run');
+  assert.equal(examples.statusLine(st({ k: 6, phase: 'topup', stop: 'quota', X: 1, N: 6, S: 1 })), 'examples: balancing — extras 1 of 24 rated · needs_edits with reason 6 of 6 · send_as_is with reason 1');
+});
