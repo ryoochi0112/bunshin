@@ -35,6 +35,10 @@ function initialized(t) {
   return f;
 }
 
+function localDate() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
 function readEntry(dir) { return fs.readFileSync(path.join(dir, 'entries/model.md'), 'utf8'); }
 function writeEntry(dir, text) { store.writeText(dir, 'entries/model.md', text, { synthetic: true }); }
 
@@ -64,7 +68,7 @@ test('approve changes only the draft block through the atomic store writer', (t)
   const original = store.writeText;
   const calls = [];
   t.mock.method(store, 'writeText', (...args) => { calls.push(args); return original(...args); });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDate();
   assert.equal(run(['approve', 'demo', 'demo.model.region']).code, 0);
   const expected = before.replace('status: draft\n', `status: verified\nverified: ${today}\n`);
   assert.equal(readEntry(dir), expected);
@@ -81,7 +85,7 @@ test('approval preserves CRLF, field comments, existing date, and heading bounda
   writeEntry(dir, before);
   assert.equal(run(['approve', 'demo', 'demo.model.region']).code, 0);
   assert.equal(readEntry(dir), before.replace('status: draft  # pending', 'status: verified  # pending')
-    .replace('verified: 2026-01-01', `verified: ${new Date().toISOString().slice(0, 10)}`));
+    .replace('verified: 2026-01-01', `verified: ${localDate()}`));
 });
 
 test('conflicts require resolve and exactly one claim; retired and verified refuse approval', (t) => {
@@ -212,3 +216,19 @@ test('CLI help lists kb and subprocess commands use only a temporary home', (t) 
   assert.match(invoke('kb', 'list', 'demo').stdout, /demo.model.retention  flagged  /);
   assert.equal(invoke('kb', 'flag', 'demo').status, 2);
 });
+
+for (const text of ['s01(2026-10-09)', 's12#c14 2026-10-09', '2026-10-09 - 2026-10-12', 'S01#E11（2026-10-09）, S02（2026-10-10）']) {
+  test(`CLI kb check accepts source refs and dates: ${text}`, (t) => {
+    const { run, dir } = initialized(t);
+    writeEntry(dir, `${readEntry(dir)}note: ${text}\n`);
+    assert.equal(run(['check', 'demo']).code, 0);
+  });
+}
+
+for (const text of ['電話03-1234-5678', 'TEL03-1234-5678', 'S01 TEL 03-1234-5678']) {
+  test(`CLI kb check rejects phone: ${text}`, (t) => {
+    const { run, dir } = initialized(t);
+    writeEntry(dir, `${readEntry(dir)}note: ${text}\n`);
+    assert.equal(run(['check', 'demo']).code, 1);
+  });
+}

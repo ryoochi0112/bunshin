@@ -74,8 +74,11 @@ Cloudberry Lantern は架空のモデル「灯り」を利用します。[demo.m
 Only `verified`, unflagged entries are citable. When no entry covers the question, the answer abstains and names the nearest topic:
 
 ```text
-該当する情報がありません。Closest topic: model
-Not covered. Closest topic: model
+該当する情報がありません。
+Closest topic: model
+
+Not covered.
+Closest topic: model
 ```
 
 ## Commands

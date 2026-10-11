@@ -245,3 +245,16 @@ test('kb-format doc lists exactly the parser entry keys and statuses', () => {
   assert.match(readme, /^### Knowledge bases$/m);
   assert.match(readme, /\]\(docs\/kb-format\.md\)/);
 });
+
+test('kb-format doc abstain example passes kb-cite check', () => {
+  const kb = require('../lib/kb');
+  const cite = require('../lib/kb-cite');
+  const doc = fs.readFileSync(path.join(root, 'docs', 'kb-format.md'), 'utf8');
+  const start = doc.indexOf('the answer abstains');
+  assert.notEqual(start, -1);
+  const block = /```text\n([\s\S]*?)```/.exec(doc.slice(start));
+  assert.ok(block, 'Missing abstain example');
+  const result = cite.check(kb.load(path.join(root, 'sample/kb/demo')), block[1]);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.abstain, true);
+});

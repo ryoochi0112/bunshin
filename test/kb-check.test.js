@@ -296,6 +296,32 @@ for (const [field, text, privateText] of [
   });
 }
 
+const refDates = ['s01(2026-10-09)', 's12#c14 2026-10-09', '2026-10-09 - 2026-10-12', 'S01#E11（2026-10-09）, S02（2026-10-10）'];
+
+for (const text of refDates) {
+  test(`PII scan ignores source refs and ISO dates: ${text}`, (t) => {
+    const { dir } = fixture(t, valid + `note: ${text}\n`);
+    assert.deepEqual(kbCheck.run(dir).findings.filter((item) => item.name === 'pii'), []);
+  });
+}
+
+for (const phoneText of ['電話03-1234-5678', 'TEL03-1234-5678', 'S01 TEL 03-1234-5678']) {
+  test(`PII scan still detects phone next to labels: ${phoneText}`, (t) => {
+    const { dir } = fixture(t, valid + `note: ${phoneText}\n`);
+    finding(kbCheck.run(dir), 'pii', '1234-5678');
+  });
+}
+
+test('scrub scan covers entry file names without echoing the match', (t) => {
+  const { dir } = fixture(t);
+  store.writeText(dir, 'entries/lumaclient.md', valid.replace('demo.model.provider', 'demo.other.x'), writeOptions);
+  scrub(dir);
+  const result = kbCheck.run(dir);
+  const [item] = finding(result, 'scrub');
+  assert.equal(item.file, '[redacted]');
+  assert.match(item.message, /file name/i);
+});
+
 for (const label of ['demo.person@example.invalid', '03-1234-5678']) {
   test('PII scan covers overwritten source labels without echoing the match', (t) => {
     const { dir } = fixture(t);
