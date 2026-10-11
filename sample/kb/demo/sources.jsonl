@@ -1,0 +1,2 @@
+{"id":"S01","kind":"sheet","label":"Sample KB checklist","ref":"https://example.invalid/demo/checklist","file_sha256":"0000000000000000000000000000000000000000000000000000000000000000","answered_at":"2026-10-12"}
+{"id":"S02","kind":"notion","label":"Sample KB model notes","ref":"https://example.invalid/demo/model","answered_at":"2026-10-11"}

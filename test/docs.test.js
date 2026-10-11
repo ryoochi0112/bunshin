@@ -227,3 +227,34 @@ test('calibration examples pass readers and match shapes written by the command'
   assert.deepEqual(calibrate.readQueue(dir, runId), [queue]);
   assert.deepEqual(calibrate.readRatings(dir, runId), [rating]);
 });
+
+test('kb-format doc lists exactly the parser entry keys and statuses', () => {
+  const kb = require('../lib/kb');
+  const doc = fs.readFileSync(path.join(root, 'docs', 'kb-format.md'), 'utf8');
+  const part = (title) => {
+    const start = doc.indexOf(`### ${title}`);
+    assert.notEqual(start, -1, `Missing section ${title}`);
+    const rest = doc.slice(start + title.length + 4);
+    const next = rest.search(/^##/m);
+    return next === -1 ? rest : rest.slice(0, next);
+  };
+  const rows = (text) => [...text.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)].map((row) => row[1]);
+  assert.deepEqual(rows(part('Entry keys')), kb.ENTRY_KEYS);
+  assert.deepEqual(rows(part('Statuses')), ['draft', 'verified', 'conflict', 'retired']);
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  assert.match(readme, /^### Knowledge bases$/m);
+  assert.match(readme, /\]\(docs\/kb-format\.md\)/);
+});
+
+test('kb-format doc abstain example passes kb-cite check', () => {
+  const kb = require('../lib/kb');
+  const cite = require('../lib/kb-cite');
+  const doc = fs.readFileSync(path.join(root, 'docs', 'kb-format.md'), 'utf8');
+  const start = doc.indexOf('the answer abstains');
+  assert.notEqual(start, -1);
+  const block = /```text\n([\s\S]*?)```/.exec(doc.slice(start));
+  assert.ok(block, 'Missing abstain example');
+  const result = cite.check(kb.load(path.join(root, 'sample/kb/demo')), block[1]);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.abstain, true);
+});

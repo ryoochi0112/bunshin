@@ -85,6 +85,28 @@ test('resolvePersona refuses missing, empty and ambiguous homes', (t) => {
   assert.throws(() => store.resolvePersona({ env: { BUNSHIN_HOME: home } }), /found 2.*--persona/);
 });
 
+test('kbHome places the sample KB directory under personaHome', (t) => {
+  const home = temporaryDirectory(t);
+  assert.equal(store.KB_DIR, 'kb');
+  assert.equal(store.kbHome({ BUNSHIN_HOME: home }), path.join(home, 'kb'));
+  assert.equal(store.kbHome({}), path.join(store.personaHome({}), 'kb'));
+});
+
+test('resolvePersona counts only persona directories when kb is present', (t) => {
+  const home = temporaryDirectory(t);
+  const env = { BUNSHIN_HOME: home };
+  fs.mkdirSync(path.join(home, 'kb'));
+  assert.throws(() => store.resolvePersona({ env }), {
+    message: `Expected one persona directory in ${home}; found 0. Use --persona <dir> or run "bunshin init <name>".`,
+  });
+
+  fs.mkdirSync(path.join(home, 'sample-person'));
+  assert.equal(store.resolvePersona({ env }), path.join(home, 'sample-person'));
+
+  fs.mkdirSync(path.join(home, 'sample-other'));
+  assert.throws(() => store.resolvePersona({ env }), /found 2.*--persona/);
+});
+
 test('JSON and JSONL round trip UTF-8 and create nested directories', (t) => {
   const dir = path.join(temporaryDirectory(t), 'persona');
   const first = { id: 'sample-1', text: '架空の質問' };
@@ -325,6 +347,19 @@ test('init refuses invalid names and argument counts before writing', async (t) 
   }
   assert.deepEqual(fs.readdirSync(home), []);
 });
+
+for (const args of [['kb'], ['--sample', '--name', 'kb']]) {
+  test(`init ${args.join(' ')} refuses the reserved name before creating anything`, async (t) => {
+    const root = temporaryDirectory(t);
+    const home = path.join(root, 'home');
+    const output = createIo({ BUNSHIN_HOME: home });
+
+    assert.equal(await main(['init', ...args], output.io), 1);
+    assert.deepEqual(output.read(), { stdout: '', stderr: 'init: "kb" is reserved\n' });
+    assert.equal(output.probeCalls(), 0);
+    assert.deepEqual(fs.readdirSync(root), []);
+  });
+}
 
 test('init treats --help and names with a leading hyphen as usage errors without creating a directory', async (t) => {
   const home = path.join(temporaryDirectory(t), 'home');
