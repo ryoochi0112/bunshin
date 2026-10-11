@@ -84,6 +84,10 @@ Use `/bunshin:spec-answer` for product questions, `/bunshin:idea-discussion` for
 
 See [docs/formats.md](docs/formats.md) for the plain-file persona, identity, case and report formats. See [docs/hosts.md](docs/hosts.md) for host isolation and tool permissions.
 
+### Knowledge bases
+
+A knowledge base holds reviewed, citable product facts, kept under `$BUNSHIN_HOME/kb/<name>` and managed with `bunshin kb`. See [docs/kb-format.md](docs/kb-format.md) for the layout, entry grammar, statuses, scrub list and citation syntax. A synthetic demo is at `sample/kb/demo`.
+
 ## Status
 
 M2: Claude Code path covers criteria 1–14: harvest, held-out split, build, interview, diagnose, spec answers, idea discussion, shadow, eval, calibration, launch-bar checks, export, privacy and open formats.

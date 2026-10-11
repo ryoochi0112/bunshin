@@ -227,3 +227,21 @@ test('calibration examples pass readers and match shapes written by the command'
   assert.deepEqual(calibrate.readQueue(dir, runId), [queue]);
   assert.deepEqual(calibrate.readRatings(dir, runId), [rating]);
 });
+
+test('kb-format doc lists exactly the parser entry keys and statuses', () => {
+  const kb = require('../lib/kb');
+  const doc = fs.readFileSync(path.join(root, 'docs', 'kb-format.md'), 'utf8');
+  const part = (title) => {
+    const start = doc.indexOf(`### ${title}`);
+    assert.notEqual(start, -1, `Missing section ${title}`);
+    const rest = doc.slice(start + title.length + 4);
+    const next = rest.search(/^##/m);
+    return next === -1 ? rest : rest.slice(0, next);
+  };
+  const rows = (text) => [...text.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)].map((row) => row[1]);
+  assert.deepEqual(rows(part('Entry keys')), kb.ENTRY_KEYS);
+  assert.deepEqual(rows(part('Statuses')), ['draft', 'verified', 'conflict', 'retired']);
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  assert.match(readme, /^### Knowledge bases$/m);
+  assert.match(readme, /\]\(docs\/kb-format\.md\)/);
+});
