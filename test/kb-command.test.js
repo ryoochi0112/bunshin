@@ -232,3 +232,21 @@ for (const text of ['電話03-1234-5678', 'TEL03-1234-5678', 'S01 TEL 03-1234-56
     assert.equal(run(['check', 'demo']).code, 1);
   });
 }
+
+const piiTable = require('./kb-pii-table');
+
+for (const text of piiTable.clean) {
+  test(`CLI kb check table: not flagged: ${text}`, (t) => {
+    const { run, dir } = initialized(t);
+    writeEntry(dir, `${readEntry(dir)}note: ${text}\n`);
+    assert.equal(run(['check', 'demo']).code, 0);
+  });
+}
+
+for (const text of piiTable.phones) {
+  test(`CLI kb check table: flagged: ${text}`, (t) => {
+    const { run, dir } = initialized(t);
+    writeEntry(dir, `${readEntry(dir)}note: ${text}\n`);
+    assert.equal(run(['check', 'demo']).code, 1);
+  });
+}

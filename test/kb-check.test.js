@@ -450,3 +450,19 @@ test('checker reads only sample data and isolated fixtures, never the real home'
   assert.deepEqual(kbCheck.run(dir), { ok: true, findings: [] });
   assert.ok(paths.length >= 8);
 });
+
+const piiTable = require('./kb-pii-table');
+
+for (const text of piiTable.clean) {
+  test(`PII table: not flagged: ${text}`, (t) => {
+    const { dir } = fixture(t, valid + `note: ${text}\n`);
+    assert.deepEqual(kbCheck.run(dir).findings.filter((item) => item.name === 'pii'), []);
+  });
+}
+
+for (const text of piiTable.phones) {
+  test(`PII table: flagged: ${text}`, (t) => {
+    const { dir } = fixture(t, valid + `note: ${text}\n`);
+    assert.ok(kbCheck.run(dir).findings.some((item) => item.name === 'pii'));
+  });
+}
