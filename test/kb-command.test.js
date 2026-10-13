@@ -1,11 +1,13 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { spawnSync } = require('node:child_process');
+const { Readable } = require('node:stream');
 const store = require('../lib/store');
 const kb = require('../lib/kb');
 const check = require('../lib/kb-check');
@@ -250,3 +252,127 @@ for (const text of piiTable.phones) {
     assert.equal(run(['check', 'demo']).code, 1);
   });
 }
+
+function directoryHash(dir) {
+  const hash = crypto.createHash('sha256');
+  function walk(relative) {
+    for (const item of fs.readdirSync(path.join(dir, relative), { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const file = path.join(relative, item.name);
+      hash.update(`${file}\0`);
+      if (item.isDirectory()) walk(file);
+      else hash.update(fs.readFileSync(path.join(dir, file)));
+    }
+  }
+  walk('');
+  return hash.digest('hex');
+}
+
+function ingest(env, args, input) {
+  return spawnSync(process.execPath, [cli, 'kb', ...args], {
+    env: { ...process.env, ...env }, input, encoding: 'utf8',
+  });
+}
+
+const sourceRow = { kind: 'slack', label: 'Sample KB thread', ref: 'https://example.invalid/demo/thread', answered_at: '2026-10-13' };
+const draftRow = { id: 'demo.model.next', claim: 'Cloudberry Lantern supports a fictional model.', sources: ['S01#E14'] };
+
+test('CLI sources add and draft consume JSONL, preserve existing entry bytes, and list new drafts', (t) => {
+  const { dir, env, run } = initialized(t);
+  const sources = [sourceRow, { ...sourceRow, id: 'S04', kind: 'notion', label: 'Sample KB extra notes', ref: 'https://example.invalid/demo/extra' }];
+  const registered = ingest(env, ['sources', 'add', 'demo'], `\n${sources.map((row) => JSON.stringify(row)).join('\r\n\n')}\n`);
+  assert.equal(registered.status, 0, registered.stderr);
+  assert.equal(registered.stdout, 'S03  Sample KB thread\nS04  Sample KB extra notes\n');
+  const before = readEntry(dir);
+  const answer = { row_id: 'sample-14', cell: 'E14', question: 'Which fictional model?', answer: 'Lantern', answer_type: 'text' };
+  const entries = [{ ...draftRow, id: 'demo.security.transport', sources: ['S03#p3'], answers: [answer] }, draftRow];
+  const drafted = ingest(env, ['draft', 'demo'], `\n${entries.map((row) => JSON.stringify(row)).join('\n\n')}\n`);
+  assert.equal(drafted.status, 0, drafted.stderr);
+  assert.equal(drafted.stdout, 'demo.security.transport\ndemo.model.next\n');
+  assert.equal(readEntry(dir), before + '\n### demo.model.next\nclaim: Cloudberry Lantern supports a fictional model.\nstatus: draft\nsources: S01#E14\n');
+  assert.equal(fs.readFileSync(path.join(dir, 'entries/security.md'), 'utf8'), '# security\n\n### demo.security.transport\nclaim: Cloudberry Lantern supports a fictional model.\nstatus: draft\nsources: S03#p3\n');
+  assert.deepEqual(store.readJsonl(dir, 'answers.jsonl'), [{ ...answer, source: 'S03', entry: 'demo.security.transport', excluded: null, why: '' }]);
+  const listed = run(['list', 'demo', '--status', 'draft']);
+  assert.equal(listed.code, 0);
+  assert.match(listed.stdout, /^demo.model.next  draft  /m);
+  assert.match(listed.stdout, /^demo.security.transport  draft  /m);
+});
+
+for (const [label, args, first, bad] of [
+  ['duplicate ref', ['sources', 'add', 'demo'], { ...sourceRow, ref: 'https://example.invalid/demo/first' }, { ...sourceRow, ref: 'https://example.invalid/demo/model' }],
+  ['duplicate sha', ['sources', 'add', 'demo'], { ...sourceRow, ref: 'https://example.invalid/demo/first' }, { ...sourceRow, file_sha256: '0'.repeat(64) }],
+  ['scrub label', ['sources', 'add', 'demo'], { ...sourceRow, ref: 'https://example.invalid/demo/first' }, { ...sourceRow, label: 'LumaClient' }],
+  ['email ref', ['sources', 'add', 'demo'], { ...sourceRow, ref: 'https://example.invalid/demo/first' }, { ...sourceRow, ref: 'demo.person@example.invalid' }],
+  ['bad prefix', ['draft', 'demo'], { ...draftRow, id: 'demo.new.first' }, { ...draftRow, id: 'other.model.next' }],
+  ['retired id reuse', ['draft', 'demo'], { ...draftRow, id: 'demo.new.first' }, { ...draftRow, id: 'demo.model.legacy' }],
+  ['unknown source', ['draft', 'demo'], { ...draftRow, id: 'demo.new.first' }, { ...draftRow, sources: ['S99#p3'] }],
+  ['scrub claim', ['draft', 'demo'], { ...draftRow, id: 'demo.new.first' }, { ...draftRow, claim: 'ＬＵＭＡＣＬＩＥＮＴ' }],
+]) {
+  test(`CLI ${label} exits 1 with no file changes for the whole batch`, (t) => {
+    const { dir, env } = initialized(t);
+    store.writeText(path.dirname(dir), 'demo.scrub.txt', 'LumaClient\n', { synthetic: true });
+    const before = directoryHash(dir);
+    const result = ingest(env, args, [first, bad].map((row) => JSON.stringify(row)).join('\n'));
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /^Row 2:/);
+    assert.ok(!result.stderr.includes('LumaClient'));
+    assert.equal(directoryHash(dir), before);
+  });
+}
+
+test('new CLI actions reject malformed JSONL before writes and retain strict usage parsing', (t) => {
+  const { dir, env, run } = initialized(t);
+  for (const [args, row] of [[['sources', 'add', 'demo'], sourceRow], [['draft', 'demo'], draftRow]]) {
+    const before = directoryHash(dir);
+    const result = ingest(env, args, `\n${JSON.stringify(row)}\n\n{broken\n`);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^Line 4: invalid JSON/);
+    assert.equal(directoryHash(dir), before);
+    assert.equal(ingest(env, args, '\n \r\n').status, 0);
+    assert.equal(directoryHash(dir), before);
+  }
+  for (const args of [['sources', 'demo'], ['sources', 'list', 'demo'], ['sources', 'add'],
+    ['sources', 'add', '../demo'], ['sources', 'add', 'demo', '--other'], ['sources', 'add', 'demo', 'extra'],
+    ['draft'], ['draft', 'demo', '--status', 'verified'], ['draft', 'demo', 'extra']]) {
+    assert.equal(run(args).code, 2, JSON.stringify(args));
+  }
+  assert.equal(ingest(env, ['draft', 'missing'], JSON.stringify(draftRow)).status, 1);
+});
+
+test('new CLI actions accept stream stdin and draft runs the checker after writing', async (t) => {
+  const { dir, env } = initialized(t);
+  const probe = () => 'private';
+  const invoke = async (args, stdin) => {
+    let stdout = '';
+    let stderr = '';
+    const code = await command.run(args, { env, probe, stdin,
+      stdout: { write(text) { stdout += text; } }, stderr: { write(text) { stderr += text; } } });
+    return { code, stdout, stderr };
+  };
+  const sourceText = JSON.stringify(sourceRow);
+  assert.equal((await invoke(['sources', 'add', 'demo'], Readable.from([sourceText.slice(0, 15), sourceText.slice(15)]))).code, 0);
+  const original = check.run;
+  const calls = [];
+  t.mock.method(check, 'run', (...args) => {
+    calls.push(args);
+    assert.ok(kb.load(dir).entries.some((entry) => entry.id === draftRow.id));
+    return original(...args);
+  });
+  const result = await invoke(['draft', 'demo'], JSON.stringify(draftRow));
+  assert.deepEqual(result, { code: 0, stdout: 'demo.model.next\n', stderr: '' });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], dir);
+  assert.equal(calls[0][1].probe, probe);
+});
+
+test('draft prints post-write checker findings and exits 1 when the KB needs review', (t) => {
+  const { dir, env } = initialized(t);
+  store.writeText(dir, 'entries/model.md', readEntry(dir) + '\n# demo.person@example.invalid\n', { synthetic: true });
+  const result = ingest(env, ['draft', 'demo'], JSON.stringify(draftRow));
+  assert.equal(result.status, 1);
+  const [added, ...findings] = result.stdout.trim().split('\n');
+  assert.equal(added, draftRow.id);
+  assert.deepEqual(findings.map((line) => JSON.parse(line)), check.run(dir).findings);
+  assert.ok(!result.stdout.includes('demo.person@example.invalid'));
+  assert.equal(kb.load(dir).entries.find((entry) => entry.id === draftRow.id).status, 'draft');
+});
