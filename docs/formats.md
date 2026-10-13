@@ -381,12 +381,31 @@ Each line in `evals/<run_id>/drafts.jsonl` records a draft. The layer recorded h
 | `drafter.host` | Host that generated the draft. |
 | `drafter.model` | Recorded model name, or `null` for default. |
 | `at` | ISO timestamp of the draft. |
+| `kb` | Present only for a bound persona: `{name, digest_hash}`. |
+| `kb.name` | Bound knowledge base name, for example `demo`. |
+| `kb.digest_hash` | SHA-256 hex hash of the citable digest used for this draft. |
+| `cited` | Present only for a bound persona: unique cited entry ids in answer order. Unknown and non-citable ids are included; scrubbed ids are omitted. |
+| `gates` | Present only for a bound persona: four independent structural-check booleans. |
+| `gates.citation` | `false` when any sentence has a `no-citation` problem. |
+| `gates.resolves` | `false` when any sentence has an `unknown-id` problem. |
+| `gates.current` | `false` when any sentence has a `not-citable` problem (including draft, conflict, retired or flagged entries). |
+| `gates.scrub` | `false` when any sentence has a `scrub` problem against the KB's optional sibling `<name>.scrub.txt` file. |
+
+Bound personas draft with `tools: 'none'` and no `allowedTools`. The gates come from `checkSpecReply` against the loaded KB and scrub list; they do not change the judge loop or establish factual correctness. The exact abstain and hand-back forms pass the citation gates, while their details still receive the scrub check. Unbound personas retain `tools: 'notion-read'` and omit `kb`, `cited` and `gates`.
 
 ### Example: `drafts.jsonl`
 
 ```json
 {"case_id":"sample-10","layer":"judgment","skill":"idea-discussion","draft":"Try two search labels before widening the experiment.","drafter":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
 ```
+
+Shadow stores one draft object in `shadow/<id>/draft.json` with the same `layer`, `skill`, `draft`, `drafter`, `at` and optional `kb`/`cited`/`gates` fields. It uses `format_version: 1` and `id` instead of `case_id`. When gates are present, `shadow show` prints a line after the draft, for example `gates: citation=true resolves=true current=true scrub=true`.
+
+## Run record: `run.json`
+
+`evals/<run_id>/run.json` pins the persona version, drafter and judge settings, rubric, judge examples, vote count, start time and optional limit. A new run on a bound persona also records `kb: {name, digest_hash}`, using the same KB name and SHA-256 digest hash as its draft rows. Unbound runs omit `kb`.
+
+`eval run --run <run_id>` refuses a changed digest with `eval run: kb digest differs from run` before any host call or run-file write. Adding or removing a persona's KB binding also changes the digest comparison. `eval run --rejudge-from <run_id>` copies the source run's `kb` metadata and draft rows, including their `cited` and `gates` fields, even if the current KB has changed. It judges the saved drafts without recomposing or drafting them.
 
 ## Judgment record: `judgments.jsonl`
 

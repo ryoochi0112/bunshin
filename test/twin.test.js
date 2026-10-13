@@ -120,6 +120,37 @@ test('bound spec-answer composes only the KB template and digest with stripped f
   for (const slug of ['region', 'retention', 'legacy']) assert.ok(!text.includes(`[demo.model.${slug}]`));
 });
 
+test('composer reuses a supplied bound KB without loading it again', (t) => {
+  const { dir, env } = boundFixture(t);
+  const bound = kb.loadBound(dir, env);
+  const markdown = fs.readFileSync(path.join(dir, 'identity.md'), 'utf8');
+  const expected = {
+    text: [templateBody('core'), markdown, templateBody('spec-answer-kb')].join('\n\n') + '\n' + demoDigest,
+    kb: { name: 'demo', hash: demoHash, count: 1 },
+  };
+  const load = t.mock.method(kb, 'loadBound');
+  assert.deepEqual(twin.compose(dir, 'spec-answer', { env, bound }), expected);
+  assert.equal(twin.composePrompt(dir, 'spec-answer', { env, bound }), expected.text);
+  assert.deepEqual(twin.compose(dir, 'idea-discussion', { env, bound }), {
+    text: [templateBody('core'), markdown, templateBody('idea-discussion')].join('\n\n'), kb: null,
+  });
+  assert.equal(load.mock.calls.length, 0);
+  assert.deepEqual(twin.compose(dir, 'spec-answer', { env }), expected);
+  assert.equal(load.mock.calls.length, 1, 'omitting bound still loads the KB');
+});
+
+test('composer accepts an explicit null bound without loading a KB', (t) => {
+  const { dir, env } = boundFixture(t);
+  const markdown = fs.readFileSync(path.join(dir, 'identity.md'), 'utf8');
+  const load = t.mock.method(kb, 'loadBound');
+  for (const skill of ['spec-answer', 'idea-discussion']) {
+    const expected = [templateBody('core'), markdown, templateBody(skill)].join('\n\n');
+    assert.deepEqual(twin.compose(dir, skill, { env, bound: null }), { text: expected, kb: null });
+    assert.equal(twin.composePrompt(dir, skill, { env, bound: null }), expected);
+  }
+  assert.equal(load.mock.calls.length, 0);
+});
+
 test('bound idea-discussion keeps the original prompt and does not require a readable KB', (t) => {
   const { dir, kbDir, env } = boundFixture(t);
   fs.rmSync(kbDir, { recursive: true, force: true });
