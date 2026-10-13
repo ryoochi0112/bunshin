@@ -1,12 +1,14 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const kb = require('../lib/kb');
 const store = require('../lib/store');
+const { main } = require('../bin/bunshin');
 
 const sample = path.resolve(__dirname, '../sample/kb/demo');
 const manifest = { format_version: 1, name: 'demo', product: 'Cloudberry Lantern', synthetic: true, languages: ['ja'] };
@@ -167,4 +169,66 @@ test('loader reads only sample data or isolated fixtures, never the real home', 
   assert.deepEqual(kb.load(sample).errors, []);
   assert.deepEqual(kb.load(dir).errors, []);
   assert.ok(paths.length >= 6);
+});
+
+test('unbound sample persona returns null without resolving a KB', () => {
+  assert.equal(kb.loadBound(path.resolve(__dirname, '../sample/persona'), {}), null);
+});
+
+test('bound sample KB digest includes only citable facts and tracks claim and flag changes', async (t) => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bunshin-kb-bound-')));
+  t.after(() => { store._resetGuardCache(); fs.rmSync(home, { recursive: true, force: true }); });
+  const env = { BUNSHIN_HOME: home };
+  const personaDir = path.join(home, 'sample');
+  const persona = store.readJson(path.resolve(__dirname, '../sample/persona'), 'persona.json');
+  store.writeJson(personaDir, 'persona.json', { ...persona, kb: 'demo' }, { synthetic: true });
+  let stderr = '';
+  assert.equal(await main(['kb', 'init', 'demo', '--sample'], {
+    env, stdout: { write() {} }, stderr: { write(text) { stderr += text; } },
+  }), 0, stderr);
+  const bound = kb.loadBound(personaDir, env);
+  const text = '## model\n- [demo.model.provider] Cloudberry Lantern は架空のモデル「灯り」を利用する。\n'
+    + '  select: 利用AI=灯り; 提供元国=架空国\n';
+  assert.equal(bound.name, 'demo');
+  assert.equal(bound.dir, kb.resolve({ name: 'demo', env }));
+  assert.deepEqual(bound.data.errors, []);
+  assert.deepEqual(bound.digest, {
+    text, hash: crypto.createHash('sha256').update(text).digest('hex'), ids: ['demo.model.provider'],
+  });
+  assert.deepEqual(kb.loadBound(personaDir, env).digest, bound.digest);
+  const file = 'entries/model.md';
+  const original = fs.readFileSync(path.join(bound.dir, file), 'utf8');
+  store.writeText(bound.dir, file, original.replace('claim: Cloudberry', 'claim: cloudberry'), { synthetic: true });
+  assert.notEqual(kb.loadBound(personaDir, env).digest.hash, bound.digest.hash);
+  store.writeText(bound.dir, file, original, { synthetic: true });
+  store.appendJsonl(bound.dir, 'flags.jsonl', { id: 'demo.model.provider', flagged: true }, { synthetic: true });
+  const empty = kb.loadBound(personaDir, env).digest;
+  assert.deepEqual(empty, { text: '', hash: crypto.createHash('sha256').update('').digest('hex'), ids: [] });
+  store.appendJsonl(bound.dir, 'flags.jsonl', { id: 'demo.model.provider', flagged: false }, { synthetic: true });
+  assert.deepEqual(kb.loadBound(personaDir, env).digest, bound.digest);
+});
+
+test('digest preserves file and entry order and treats legacy flags as active', (t) => {
+  const { dir } = fixture(t, valid + valid.replace('provider', 'second'));
+  store.writeText(dir, 'entries/alpha.md', valid.replace('demo.model.provider', 'demo.alpha.first'), { synthetic: true });
+  const data = kb.load(dir);
+  const digest = kb.digest(data);
+  assert.deepEqual(digest.ids, ['demo.alpha.first', 'demo.model.provider', 'demo.model.second']);
+  assert.equal(digest.text, '## alpha\n- [demo.alpha.first] 架空のモデルを利用する。\n'
+    + '## model\n- [demo.model.provider] 架空のモデルを利用する。\n- [demo.model.second] 架空のモデルを利用する。\n');
+  data.flags.set('demo.alpha.first', { id: 'demo.alpha.first', reason: 'Review again.' });
+  assert.deepEqual(kb.digest(data).ids, ['demo.model.provider', 'demo.model.second']);
+});
+
+test('loadBound rejects missing KBs and reports the first located parse error', (t) => {
+  const { home, dir } = fixture(t);
+  const personaDir = path.join(home, 'sample');
+  const persona = store.readJson(path.resolve(__dirname, '../sample/persona'), 'persona.json');
+  store.writeJson(personaDir, 'persona.json', { ...persona, kb: 'missing' }, { synthetic: true });
+  assert.throws(() => kb.loadBound(personaDir, { BUNSHIN_HOME: home }), { message: 'KB missing not found' });
+  store.writeJson(personaDir, 'persona.json', { ...persona, kb: 'demo' });
+  store.writeText(dir, 'entries/model.md', valid + 'extra: value\nnot a field\n', { synthetic: true });
+  assert.throws(() => kb.loadBound(personaDir, { BUNSHIN_HOME: home }), {
+    message: 'KB demo has parse errors: entries/model.md:6 Unknown key: extra.',
+  });
 });

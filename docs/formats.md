@@ -36,6 +36,7 @@ The sample has no `interview-state.json` because it has no active session.
 | `synthetic` | Whether the persona contains synthetic sample data. |
 | `owner.slack_user_id` | Slack user id for the owner, or `null`. |
 | `version` | Current committed identity version. |
+| `kb` | Optional bound KB name matching `/^[a-z0-9][a-z0-9-]*$/`, for example `"demo"`. Omit it for an unbound persona. |
 | `launch_bar.send_as_is` | Required send-as-is rate. The default is `0.5`. |
 | `launch_bar.min_heldout` | Minimum held-out case count. The default is `30`. |
 | `launch_bar.min_per_layer` | Minimum cases in each layer. The default is `10`. |
