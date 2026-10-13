@@ -44,6 +44,57 @@ function localDate() {
 function readEntry(dir) { return fs.readFileSync(path.join(dir, 'entries/model.md'), 'utf8'); }
 function writeEntry(dir, text) { store.writeText(dir, 'entries/model.md', text, { synthetic: true }); }
 
+test('CLI stale compares dates, supports dry-run, skips repeat flags, and makes citations not-citable', (t) => {
+  const { dir, env, run } = initialized(t);
+  const invoke = (...args) => spawnSync(process.execPath, [cli, 'kb', ...args], { env: { ...process.env, ...env }, encoding: 'utf8' });
+  const args = ['stale', 'demo', '--source', 'S01', '--changed-at', '2026-10-13'];
+  const before = directoryHash(dir);
+  for (const date of ['2026-10-11', '2026-10-12']) {
+    assert.deepEqual(run(['stale', 'demo', '--source', 'S01', '--changed-at', date]), { code: 0, stdout: '', stderr: '' });
+  }
+  const dry = invoke(...args, '--dry-run');
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.equal(dry.stdout, 'flagged demo.model.provider\n');
+  assert.equal(directoryHash(dir), before);
+  store.writeText(path.dirname(dir), 'reply.txt', 'Cloudberry Lantern uses a fictional model. [demo.model.provider]\n', { synthetic: true });
+  const citeArgs = ['cite', 'demo', '--draft', path.join(path.dirname(dir), 'reply.txt')];
+  assert.equal(run(citeArgs).code, 0);
+  const first = invoke(...args);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(first.stdout, 'flagged demo.model.provider\n');
+  const after = directoryHash(dir);
+  assert.deepEqual(run(args), { code: 0, stdout: 'skipped demo.model.provider\n', stderr: '' });
+  assert.equal(directoryHash(dir), after);
+  const cited = run(citeArgs);
+  assert.equal(cited.code, 1);
+  assert.match(cited.stdout, /not-citable/);
+  assert.deepEqual(run([...args, '--reason', 'Sample source revision']), { code: 0, stdout: 'flagged demo.model.provider\n', stderr: '' });
+  assert.equal(store.readJsonl(dir, 'flags.jsonl').at(-1).reason, 'Sample source revision');
+});
+
+test('CLI stale retains strict options and reports invalid source or date as failures', (t) => {
+  const { dir, run } = initialized(t);
+  const args = ['stale', 'demo', '--source', 'S01', '--changed-at', '2026-10-13'];
+  const before = directoryHash(dir);
+  for (const invalid of [['stale'], ['stale', 'demo'], ['stale', 'demo', '--source', 'S01'],
+    ['stale', 'demo', '--changed-at', '2026-10-13'], [...args, '--other'], [...args, 'extra'],
+    [...args, '--reason'], [...args, '--reason', '  '], [...args, '--source', 'S02'],
+    [...args, '--dry-run', '--dry-run'], [...args, '--dry-run', 'true']]) {
+    assert.equal(run(invalid).code, 2, JSON.stringify(invalid));
+  }
+  assert.equal(run(['stale', 'missing', '--source', 'S01', '--changed-at', '2026-10-13']).code, 1);
+  const unknown = run(['stale', 'demo', '--source', 'S99', '--changed-at', '2026-10-13']);
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /unknown source/i);
+  for (const date of ['bad', '2026-02-30']) {
+    const result = run(['stale', 'demo', '--source', 'S01', '--changed-at', date]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /YYYY-MM-DD/);
+  }
+  assert.equal(directoryHash(dir), before);
+  assert.match(run(['--help']).stdout, /stale <name> --source S<nn> --changed-at <date>/);
+});
+
 test('init creates an empty KB and sample init renames manifest and entry ids', (t) => {
   const { run, home } = fixture(t);
   assert.equal(run(['init', 'empty']).code, 0);

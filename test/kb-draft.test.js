@@ -9,6 +9,7 @@ const test = require('node:test');
 const kb = require('../lib/kb');
 const check = require('../lib/kb-check');
 const draft = require('../lib/kb-draft');
+const cite = require('../lib/kb-cite');
 const store = require('../lib/store');
 
 const sample = path.resolve(__dirname, '../sample/kb/demo');
@@ -39,6 +40,63 @@ function directoryHash(dir) {
   walk('');
   return hash.digest('hex');
 }
+
+test('stale flags only verified entries citing the changed source after their verification date', (t) => {
+  const { dir } = fixture(t);
+  const before = directoryHash(dir);
+  for (const changedAt of ['2026-10-11', '2026-10-12']) {
+    assert.deepEqual(draft.stale(dir, { source: 'S01', changedAt }), { flagged: [], skipped: [] });
+    assert.equal(directoryHash(dir), before);
+  }
+  draft.addSources(dir, [source]);
+  assert.deepEqual(draft.stale(dir, { source: 'S03', changedAt: '2026-10-13' }), { flagged: [], skipped: [] });
+  const entryBytes = fs.readFileSync(path.join(dir, 'entries/model.md'), 'utf8');
+  const original = store.appendJsonl;
+  const calls = [];
+  t.mock.method(store, 'appendJsonl', (...args) => { calls.push(args); return original(...args); });
+  assert.deepEqual(draft.stale(dir, { source: 'S01', changedAt: '2026-10-13' }), { flagged: ['demo.model.provider'], skipped: [] });
+  const [flag] = store.readJsonl(dir, 'flags.jsonl');
+  assert.deepEqual(flag, { id: 'demo.model.provider', flagged: true, reason: 'source S01 changed 2026-10-13', at: flag.at });
+  assert.equal(new Date(flag.at).toISOString(), flag.at);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], dir);
+  assert.equal(calls[0][1], 'flags.jsonl');
+  assert.equal(calls[0][3].synthetic, true);
+  assert.equal(fs.readFileSync(path.join(dir, 'entries/model.md'), 'utf8'), entryBytes);
+  const reply = cite.check(kb.load(dir), 'Cloudberry Lantern uses a fictional model. [demo.model.provider]');
+  assert.equal(reply.ok, false);
+  assert.ok(reply.sentences.some((sentence) => sentence.problems.includes('not-citable')));
+});
+
+test('stale dry-run preserves all bytes and latest flag reason controls idempotence', (t) => {
+  const { dir } = fixture(t);
+  const args = { source: 'S01', changedAt: '2026-10-13', reason: 'Sample source revision' };
+  const flagged = { flagged: ['demo.model.provider'], skipped: [] };
+  const skipped = { flagged: [], skipped: ['demo.model.provider'] };
+  const before = directoryHash(dir);
+  assert.deepEqual(draft.stale(dir, { ...args, dryRun: true }), flagged);
+  assert.equal(directoryHash(dir), before);
+  assert.deepEqual(draft.stale(dir, args), flagged);
+  const after = directoryHash(dir);
+  assert.deepEqual(draft.stale(dir, args), skipped);
+  assert.deepEqual(draft.stale(dir, { ...args, dryRun: true }), skipped);
+  assert.equal(directoryHash(dir), after);
+  assert.deepEqual(draft.stale(dir, { ...args, reason: 'Another sample revision' }), flagged);
+  assert.deepEqual(draft.stale(dir, args), flagged);
+  store.appendJsonl(dir, 'flags.jsonl', { id: 'demo.model.provider', flagged: false, reason: args.reason, at: new Date().toISOString() }, options);
+  assert.deepEqual(draft.stale(dir, args), flagged);
+  assert.equal(store.readJsonl(dir, 'flags.jsonl').length, 5);
+});
+
+test('stale rejects unknown sources and malformed dates without writes', (t) => {
+  const { dir } = fixture(t);
+  const before = directoryHash(dir);
+  assert.throws(() => draft.stale(dir, { source: 'S99', changedAt: '2026-10-13' }), /unknown source/i);
+  for (const changedAt of [undefined, null, 20261013, '2026-2-01', '2026-02-30', '2026-13-01', '2026-10-13T00:00:00Z']) {
+    assert.throws(() => draft.stale(dir, { source: 'S01', changedAt }), /YYYY-MM-DD/);
+  }
+  assert.equal(directoryHash(dir), before);
+});
 
 test('addSources assigns ids after the highest existing source and uses the store append writer', (t) => {
   const { dir } = fixture(t);
