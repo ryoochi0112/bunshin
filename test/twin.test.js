@@ -383,3 +383,53 @@ test('CLI rejects malformed JSON options and leading or trailing usage junk', as
     }
   }
 });
+
+test('KB reply check returns citation metadata and flattens problems with sentence numbers', () => {
+  const kbData = kb.load(path.join(__dirname, '..', 'sample', 'kb', 'demo'));
+  const id = 'demo.model.provider';
+  assert.deepEqual(twinCheck.checkSpecReply(`Sample fact [${id}].\nAgain [${id}].`, { kbData }), {
+    ok: true, problems: [], abstain: false, handback: false, cited: [id],
+  });
+  assert.deepEqual(twinCheck.checkSpecReply(`Sample fact [${id}].\nLumaClient sample [${id}].\nUnknown [demo.model.absent].\nUncited fact.`,
+    { kbData, scrub: ['LumaClient'] }), {
+    ok: false, problems: ['2: scrub', '3: unknown-id', '4: no-citation'],
+    abstain: false, handback: false, cited: [id, 'demo.model.absent'],
+  });
+  assert.deepEqual(twinCheck.checkSpecReply('Uncitable [demo.model.region][demo.model.absent].', { kbData }), {
+    ok: false, problems: ['1: not-citable', '1: unknown-id'], abstain: false,
+    handback: false, cited: ['demo.model.region', 'demo.model.absent'],
+  });
+});
+
+test('KB reply check accepts each exact template fallback form with matching metadata', () => {
+  const kbData = kb.load(path.join(__dirname, '..', 'sample', 'kb', 'demo'));
+  const forms = [...template('spec-answer-kb').matchAll(/^```text\n([^`]+)\n```$/gm)].map((match) => match[1]);
+  assert.deepEqual(forms, [
+    '該当する情報がありません。\nClosest topic: <topic>',
+    'Not covered.\nClosest topic: <topic>',
+    '要確認（人の判断が必要です）。\nReason: <one line>',
+    'Needs human.\nReason: <one line>',
+  ]);
+  for (const [index, form] of forms.entries()) {
+    assert.deepEqual(twinCheck.checkSpecReply(form.replace('<topic>', 'model').replace('<one line>', 'Review needed.'), { kbData }), {
+      ok: true, problems: [], abstain: index < 2, handback: index >= 2, cited: [],
+    });
+  }
+});
+
+test('KB reply scrub messages never include scrubbed sentence text or citation ids', () => {
+  const kbData = kb.load(path.join(__dirname, '..', 'sample', 'kb', 'demo'));
+  const result = twinCheck.checkSpecReply('LumaClient sample [demo.model.lumaclient].', { kbData, scrub: ['LumaClient'] });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.problems, ['1: unknown-id', '1: scrub']);
+  assert.equal(JSON.stringify(result).toLowerCase().includes('lumaclient'), false);
+});
+
+test('Sources checks retain their original results when options contain no KB data', () => {
+  for (const reply of ['Sample answer.\nSources: none', 'Sample answer.\nSources:\n- Sample page — https://example.invalid/model',
+    'Sample answer.', '', null]) {
+    for (const options of [{}, { scrub: ['Sample'] }, { kbData: null, scrub: ['Sample'] }]) {
+      assert.deepEqual(twinCheck.checkSpecReply(reply, options), twinCheck.checkSpecReply(reply));
+    }
+  }
+});
