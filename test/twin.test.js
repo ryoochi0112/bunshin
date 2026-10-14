@@ -420,15 +420,27 @@ test('KB reply check returns citation metadata and flattens problems with senten
   const id = 'demo.model.provider';
   assert.deepEqual(twinCheck.checkSpecReply(`Sample fact [${id}].\nAgain [${id}].`, { kbData }), {
     ok: true, problems: [], abstain: false, handback: false, cited: [id],
+    facts: 2, sentences: [
+      { text: `Sample fact [${id}].`, ids: [id], problems: [], exempt: false },
+      { text: `Again [${id}].`, ids: [id], problems: [], exempt: false },
+    ],
   });
   assert.deepEqual(twinCheck.checkSpecReply(`Sample fact [${id}].\nLumaClient sample [${id}].\nUnknown [demo.model.absent].\nUncited fact.`,
     { kbData, scrub: ['LumaClient'] }), {
     ok: false, problems: ['2: scrub', '3: unknown-id', '4: no-citation'],
     abstain: false, handback: false, cited: [id, 'demo.model.absent'],
+    facts: 4, sentences: [
+      { text: `Sample fact [${id}].`, ids: [id], problems: [], exempt: false },
+      { text: '[redacted]', ids: [id], problems: ['scrub'], exempt: false },
+      { text: 'Unknown [demo.model.absent].', ids: ['demo.model.absent'], problems: ['unknown-id'], exempt: false },
+      { text: 'Uncited fact.', ids: [], problems: ['no-citation'], exempt: false },
+    ],
   });
   assert.deepEqual(twinCheck.checkSpecReply('Uncitable [demo.model.region][demo.model.absent].', { kbData }), {
     ok: false, problems: ['1: not-citable', '1: unknown-id'], abstain: false,
     handback: false, cited: ['demo.model.region', 'demo.model.absent'],
+    facts: 1, sentences: [{ text: 'Uncitable [demo.model.region][demo.model.absent].',
+      ids: ['demo.model.region', 'demo.model.absent'], problems: ['not-citable', 'unknown-id'], exempt: false }],
   });
 });
 
@@ -444,6 +456,7 @@ test('KB reply check accepts each exact template fallback form with matching met
   for (const [index, form] of forms.entries()) {
     assert.deepEqual(twinCheck.checkSpecReply(form.replace('<topic>', 'model').replace('<one line>', 'Review needed.'), { kbData }), {
       ok: true, problems: [], abstain: index < 2, handback: index >= 2, cited: [],
+      facts: 0, sentences: [],
     });
   }
 });

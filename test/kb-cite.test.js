@@ -10,9 +10,43 @@ const store = require('../lib/store');
 const command = require('../lib/commands/kb');
 const cite = require('../lib/kb-cite');
 const kbCheck = require('../lib/kb-check');
+const twinCheck = require('../lib/twin-check');
 
 const sample = path.resolve(__dirname, '../sample/kb/demo');
 const id = 'demo.model.provider';
+
+test('KB reply shape counts facts and marks existing exempt sentence rows', () => {
+  const kbData = kb.load(sample);
+  const template = fs.readFileSync(path.join(__dirname, '../templates/twin/spec-answer-kb.md'), 'utf8');
+  const forms = [...template.matchAll(/^```text\n([^`]+)\n```$/gm)]
+    .map((match) => match[1].replace('<topic>', 'model').replace('<one line>', 'Review needed.'));
+  const answer = `Sample fact [${id}].\nAnother fact [${id}].`;
+  const cases = [
+    [answer, false, false, 2],
+    ...forms.map((form, index) => [form, index < 2, index >= 2, 0]),
+    ...forms.slice(2).map((form) => [`${answer}\n${form}`, false, true, 2]),
+    [`> Sample quotation. No citation?\n${answer}`, false, false, 2],
+    ['Uncited fact.', false, false, 1],
+    ['Not covered.\nClosest topic: ', false, false, 2],
+    ['Needs human.\nReason: ', false, false, 2],
+  ];
+  for (const [text, abstain, handback, facts] of cases) {
+    const result = cite.check(kbData, text);
+    assert.ok(result.sentences.every((sentence) => sentence.exempt === false), text);
+    const checked = twinCheck.checkSpecReply(text, { kbData });
+    assert.deepEqual({ abstain: checked.abstain, handback: checked.handback, facts: checked.facts },
+      { abstain, handback, facts }, text);
+    assert.deepEqual(checked.sentences, result.sentences);
+  }
+  for (const text of ['> Private sample.', ...forms.map((form) => form.replace(/model|Review needed\./, 'Private sample.'))]) {
+    const result = cite.check(kbData, text, { scrub: ['Private sample'] });
+    assert.deepEqual(result.sentences, [{ text: '[redacted]', ids: [], problems: ['scrub'], exempt: true }]);
+    const checked = twinCheck.checkSpecReply(text, { kbData, scrub: ['Private sample'] });
+    assert.equal(checked.facts, 0);
+    assert.equal(checked.ok, false);
+    assert.deepEqual(checked.sentences, result.sentences);
+  }
+});
 
 function fixture(t) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bunshin-cite-test-')));
@@ -32,7 +66,7 @@ test('verified citations resolve without splitting the dots inside ids', () => {
   const data = kb.load(sample);
   for (const text of [`架空のモデルです。[${id}]`, `A sample model [${id}].`, `A sample model. [${id}]`]) {
     assert.deepEqual(cite.check(data, text), {
-      ok: true, abstain: false, handback: false, cited: [id], sentences: [{ text, ids: [id], problems: [] }],
+      ok: true, abstain: false, handback: false, cited: [id], sentences: [{ text, ids: [id], problems: [], exempt: false }],
     });
   }
 });
@@ -47,7 +81,7 @@ test('golden missing, unknown and non-citable cases report precise problems', ()
     ]),
   ]) {
     assert.deepEqual(cite.check(data, text), {
-      ok: false, abstain: false, handback: false, cited: ids, sentences: [{ text, ids, problems }],
+      ok: false, abstain: false, handback: false, cited: ids, sentences: [{ text, ids, problems, exempt: false }],
     });
   }
 });
@@ -58,11 +92,11 @@ test('every trailing citation must resolve and be citable; problems are unique',
     ok: false, abstain: false, handback: false,
     cited: [id, 'demo.model.absent', 'demo.model.region', 'demo.model.legacy'], sentences: [{ text,
       ids: [id, 'demo.model.absent', 'demo.model.region', 'demo.model.legacy'],
-      problems: ['unknown-id', 'not-citable'] }],
+      problems: ['unknown-id', 'not-citable'], exempt: false }],
   });
   const misplaced = `According to [${id}], a sample fact.`;
   assert.deepEqual(cite.check(kb.load(sample), misplaced).sentences,
-    [{ text: misplaced, ids: [], problems: ['no-citation'] }]);
+    [{ text: misplaced, ids: [], problems: ['no-citation'], exempt: false }]);
 });
 
 test('Japanese, English, question marks and newlines each split sentences', () => {
@@ -72,6 +106,7 @@ test('Japanese, English, question marks and newlines each split sentences', () =
   assert.deepEqual(result.sentences, parts.map((text, index) => ({ text,
     ids: [0, 2, 5].includes(index) ? [id] : [],
     problems: [0, 2, 5].includes(index) ? [] : ['no-citation'],
+    exempt: false,
   })));
 });
 
@@ -90,7 +125,7 @@ test('only a complete two-line abstention form is exempt', () => {
     assert.equal(cite.check(data, `${phrase} Extra claim\nClosest topic: model`).abstain, false);
     const mixed = cite.check(data, `${phrase}\nClosest topic: model\nUncited fact.`);
     assert.deepEqual(mixed, { ok: false, abstain: true, handback: false, cited: [],
-      sentences: [{ text: 'Uncited fact.', ids: [], problems: ['no-citation'] }] });
+      sentences: [{ text: 'Uncited fact.', ids: [], problems: ['no-citation'], exempt: false }] });
   }
 });
 
@@ -229,7 +264,7 @@ test('only complete hand-back pairs are exempt and remaining sentences still nee
     const result = cite.check(data, `${phrase}\nReason: Review needed.\nUncited fact.`);
     assert.equal(result.ok, false);
     assert.equal(result.handback, true);
-    assert.deepEqual(result.sentences, [{ text: 'Uncited fact.', ids: [], problems: ['no-citation'] }]);
+    assert.deepEqual(result.sentences, [{ text: 'Uncited fact.', ids: [], problems: ['no-citation'], exempt: false }]);
   }
 });
 

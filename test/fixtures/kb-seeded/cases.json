@@ -1,0 +1,53 @@
+{
+  "cases": [
+    {"key":"fake-id-01","coverage":"C","draft":"Seeded fake-id claim 01. [demo.model.fake-id-01]","defect_gate":"resolves","expected_outcome":"answered"},
+    {"key":"fake-id-02","coverage":"C","draft":"Seeded fake-id claim 02. [demo.model.fake-id-02]","defect_gate":"resolves","expected_outcome":"answered"},
+    {"key":"fake-id-03","coverage":"C","draft":"Seeded fake-id claim 03. [demo.model.fake-id-03]","defect_gate":"resolves","expected_outcome":"answered"},
+    {"key":"fake-id-04","coverage":"C","draft":"Seeded fake-id claim 04. [demo.model.fake-id-04]","defect_gate":"resolves","expected_outcome":"answered"},
+    {"key":"fake-id-05","coverage":"C","draft":"Seeded fake-id claim 05. [demo.model.fake-id-05]","defect_gate":"resolves","expected_outcome":"answered"},
+
+    {"key":"flagged-01","coverage":"C","draft":"Seeded flagged-entry claim 01. [demo.model.flagged]","defect_gate":"current","expected_outcome":"answered"},
+    {"key":"flagged-02","coverage":"C","draft":"Seeded flagged-entry claim 02. [demo.model.flagged]","defect_gate":"current","expected_outcome":"answered"},
+    {"key":"flagged-03","coverage":"C","draft":"Seeded flagged-entry claim 03. [demo.model.flagged]","defect_gate":"current","expected_outcome":"answered"},
+    {"key":"flagged-04","coverage":"C","draft":"Seeded flagged-entry claim 04. [demo.model.flagged]","defect_gate":"current","expected_outcome":"answered"},
+    {"key":"flagged-05","coverage":"C","draft":"Seeded flagged-entry claim 05. [demo.model.flagged]","defect_gate":"current","expected_outcome":"answered"},
+
+    {"key":"retired-draft-01","coverage":"C","draft":"Seeded retired-entry claim 01. [demo.model.retired]","defect_gate":"current","expected_outcome":"answered"},
+    {"key":"retired-draft-02","coverage":"C","draft":"Seeded draft-entry claim 02. [demo.model.draft]","defect_gate":"current","expected_outcome":"answered"},
+    {"key":"retired-draft-03","coverage":"C","draft":"Seeded retired-entry claim 03. [demo.model.retired]","defect_gate":"current","expected_outcome":"answered"},
+    {"key":"retired-draft-04","coverage":"C","draft":"Seeded draft-entry claim 04. [demo.model.draft]","defect_gate":"current","expected_outcome":"answered"},
+    {"key":"retired-draft-05","coverage":"C","draft":"Seeded retired-entry claim 05. [demo.model.retired]","defect_gate":"current","expected_outcome":"answered"},
+
+    {"key":"not-covered-01","coverage":"N","draft":"Seeded not-covered answer 01. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"answered_not_covered"},
+    {"key":"not-covered-02","coverage":"N","draft":"Seeded not-covered answer 02. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"answered_not_covered"},
+    {"key":"not-covered-03","coverage":"N","draft":"Seeded not-covered answer 03. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"answered_not_covered"},
+    {"key":"not-covered-04","coverage":"N","draft":"Seeded not-covered answer 04. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"answered_not_covered"},
+    {"key":"not-covered-05","coverage":"N","draft":"Seeded not-covered answer 05. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"answered_not_covered"},
+
+    {"key":"over-answer-01","coverage":"P","draft":"Seeded partial over-answer 01. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"over_answer"},
+    {"key":"over-answer-02","coverage":"P","draft":"Seeded partial over-answer 02. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"over_answer"},
+    {"key":"over-answer-03","coverage":"P","draft":"Seeded partial over-answer 03. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"over_answer"},
+    {"key":"over-answer-04","coverage":"P","draft":"Seeded partial over-answer 04. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"over_answer"},
+    {"key":"over-answer-05","coverage":"P","draft":"Seeded partial over-answer 05. [demo.model.provider]","defect_gate":"coverage","expected_outcome":"over_answer"},
+
+    {"key":"unsupported-01","coverage":"C","draft":"Seeded support claim 01. [demo.model.provider]","defect_gate":"support","support_verdict":"partly","expected_outcome":"answered"},
+    {"key":"unsupported-02","coverage":"C","draft":"Seeded support claim 02. [demo.model.provider]","defect_gate":"support","support_verdict":"not_supported","expected_outcome":"answered"},
+    {"key":"unsupported-03","coverage":"C","draft":"Seeded support claim 03. [demo.model.provider]","defect_gate":"support","support_verdict":"partly","expected_outcome":"answered"},
+    {"key":"unsupported-04","coverage":"C","draft":"Seeded support claim 04. [demo.model.provider]","defect_gate":"support","support_verdict":"not_supported","expected_outcome":"answered"},
+    {"key":"unsupported-05","coverage":"C","draft":"Seeded support claim 05. [demo.model.provider]","defect_gate":"support","support_verdict":"partly","expected_outcome":"answered"},
+    {"key":"unsupported-06","coverage":"C","draft":"Seeded support claim 06. [demo.model.provider]","defect_gate":"support","support_verdict":"not_supported","expected_outcome":"answered"},
+    {"key":"unsupported-07","coverage":"C","draft":"Seeded support claim 07. [demo.model.provider]","defect_gate":"support","support_verdict":"partly","expected_outcome":"answered"},
+    {"key":"unsupported-08","coverage":"C","draft":"Seeded support claim 08. [demo.model.provider]","defect_gate":"support","support_verdict":"not_supported","expected_outcome":"answered"},
+    {"key":"unsupported-09","coverage":"C","draft":"Seeded support claim 09. [demo.model.provider]","defect_gate":"support","support_verdict":"partly","expected_outcome":"answered"},
+    {"key":"unsupported-10","coverage":"C","draft":"Seeded support claim 10. [demo.model.provider]","defect_gate":"support","support_verdict":"not_supported","expected_outcome":"answered"},
+
+    {"key":"scrub-01","coverage":"C","draft":"FictionalClient is separate from Cloudberry Lantern. [demo.model.provider]","defect_gate":"scrub","expected_outcome":"answered"},
+    {"key":"scrub-02","coverage":"C","draft":"Cloudberry Lantern is unrelated to FictionalClient. [demo.model.provider]","defect_gate":"scrub","expected_outcome":"answered"},
+
+    {"key":"clean-c-01","coverage":"C","draft":"Cloudberry Lantern uses the fictional model Amber Kite. [demo.model.provider]","expected_outcome":"answered"},
+    {"key":"clean-c-02","coverage":"C","draft":"Cloudberry Lantern uses the fictional model Amber Kite. [demo.model.provider]","expected_outcome":"answered"},
+    {"key":"clean-p-01","coverage":"P","draft":"Cloudberry Lantern uses the fictional model Amber Kite. [demo.model.provider]\nNeeds human.\nReason: A synthetic contract term needs review.","expected_outcome":"partial"},
+    {"key":"clean-p-02","coverage":"P","draft":"Cloudberry Lantern uses the fictional model Amber Kite. [demo.model.provider]\nNeeds human.\nReason: A synthetic contract term needs review.","expected_outcome":"partial"},
+    {"key":"clean-n-01","coverage":"N","draft":"Not covered.\nClosest topic: model","expected_outcome":"abstained"}
+  ]
+}

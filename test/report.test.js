@@ -13,6 +13,7 @@ const hosts = require('../lib/hosts');
 const evalRun = require('../lib/eval-run');
 const examples = require('../lib/examples');
 const examplesCommand = require('../lib/commands/examples');
+const kb = require('../lib/kb');
 
 const root = path.join(__dirname, '..');
 const persona = store.readJson(path.join(root, 'sample', 'persona'), 'persona.json');
@@ -407,4 +408,91 @@ test('spawned eval report on a saved partial run prints incomplete and sample to
   assert.match(result.stdout, /→ sample too small/);
   assert.match(result.stdout, /incomplete: 40 of 100 held-out cases drafted and judged — no launch-bar claim/);
   assert.equal(store.readJson(dir, `evals/${run.run_id}/report.json`).launch_bar, 'sample_too_small');
+});
+
+test('unbound JSON and markdown retain their exact bytes with optional KB inputs', () => {
+  const data = input(1, 0, 1, 0);
+  data.support = [{ case_id: 'knowledge-0', sentences: [] }];
+  data.coverage = { kb_digest_hash: 'digest', cases: {} };
+  const value = report.build(data);
+  assert.equal(JSON.stringify(value), '{"format_version":1,"persona":"sample","display_name":"Sora Aoki","run_id":"2026-10-20-01","persona_version":7,"heldout":{"n":1,"knowledge":1,"judgment":0},"knowledge":{"n":1,"send_as_is":1,"send_as_is_rate":1,"wrong_uncited":0},"judgment":{"n":0,"send_as_is":0,"send_as_is_rate":null,"wrong_uncited":0},"overall_rate":1,"delta":{"knowledge":null,"judgment":null},"drafter":{"host":"fake","models":["draft-model"]},"judge":{"host":"fake","models":["judge-model"]},"judge_rubric":null,"judge_examples":null,"judge_votes":1,"rejudged_from":null,"judge_trust":"trusted","agreement":{"match":26,"rated":30},"trust_from":null,"basis":"judge","bar_n":1,"launch_bar":"sample_too_small","judge_errors":0,"unjudged":0,"undrafted":0,"complete":true}');
+  assert.equal(report.renderMarkdown(value), [
+    'bunshin eval — persona sample @ v7 — 2026-10-20',
+    'held-out: 1 pairs (knowledge 1, judgment 0)',
+    'knowledge: send as-is 100% · wrong fact without citation 0',
+    'judgment:  send as-is n/a',
+    'overall:   send as-is 100%  → sample too small',
+    'judge agreement with Sora Aoki: 26/30 (87%) → trusted',
+    'drafter: fake draft-model · judge: fake judge-model',
+    'judge examples: none · 1-call vote', '',
+  ].join('\n'));
+});
+
+function boundInput() {
+  const data = input(4, 1, 4, 1);
+  data.run.kb = { name: 'demo', digest_hash: 'a'.repeat(64) };
+  for (const draft of data.drafts.filter((row) => row.skill === 'spec-answer')) {
+    draft.kb = data.run.kb;
+    draft.gates = { citation: true, resolves: true, current: true, scrub: true };
+    draft.shape = { abstain: false, handback: false, facts: 1 };
+  }
+  data.drafts[0].gates.citation = false;
+  data.drafts[1].shape = { abstain: true, handback: false, facts: 0 };
+  data.coverage = { format_version: 1, kb: 'demo', kb_digest_hash: data.run.kb.digest_hash,
+    imported_at: run.started_at, cases: {
+      'knowledge-0': { coverage: 'P', entries: [] },
+      'knowledge-1': { coverage: 'C', entries: [] },
+      'knowledge-3': { coverage: 'C', entries: [] },
+    } };
+  data.support = data.drafts.slice(0, 3).map((row) => ({ case_id: row.case_id, sentences: [] }));
+  return data;
+}
+
+const kbLines = [
+  'kb gates: incomplete · hard failures 2 (citation 1 · resolves 0 · current 0 · support 0 · coverage 1 · scrub 0)',
+  'coverage: answered 1 · partial 0 · abstained 0 · wrong abstain 1 · handback miss 0 · over-answer 1 · answered not covered 0 · excluded 0 · unlabelled 1',
+  '- knowledge-0 P over_answer citation coverage',
+  '- knowledge-1 C wrong_abstain',
+  '- knowledge-2 unlabelled unlabelled',
+  '- knowledge-3 C answered',
+];
+
+test('bound report renders gates, coverage and every hard, missed or incomplete case safely', () => {
+  const data = boundInput();
+  data.drafts[0].draft = 'REPORT-PRIVATE-SENTENCE';
+  data.support[0].sentences = [{ index: 0, ids: ['demo.model.provider'], verdict: 'supported', text: 'REPORT-PRIVATE-SUPPORT' }];
+  data.coverage.cases['knowledge-0'].text = 'REPORT-PRIVATE-ENTRY';
+  const value = report.build(data);
+  assert.equal(value.kb_gates.status, 'incomplete');
+  assert.deepEqual(report.renderMarkdown(value).trimEnd().split('\n').slice(-6), kbLines);
+  for (const text of [JSON.stringify(value), report.renderMarkdown(value)]) assert.ok(!text.includes('REPORT-PRIVATE'));
+});
+
+test('eval report command reads coverage and support, including absent support and coverage', async (t) => {
+  const { home, dir } = fixture(t);
+  store.writeJson(dir, 'persona.json', { ...store.readJson(dir, 'persona.json'), kb: 'demo' });
+  const kbDir = kb.resolve({ name: 'demo', env: { BUNSHIN_HOME: home } });
+  for (const file of ['kb.json', 'sources.jsonl', 'entries/model.md']) {
+    store.writeText(kbDir, file, fs.readFileSync(path.join(root, 'sample', 'kb', 'demo', file), 'utf8'), { synthetic: true });
+  }
+  const data = boundInput();
+  save(dir, data);
+  store.writeJson(dir, 'coverage.json', data.coverage);
+  const base = `evals/${data.run.run_id}`;
+  data.support[0].sentences = [{ index: 0, ids: ['demo.model.provider'], verdict: 'partly' }];
+  store.writeJsonl(dir, `${base}/support.jsonl`, data.support);
+  const shown = await cli(['report', '--run', data.run.run_id, '--persona', dir], home);
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.equal(shown.stderr, '');
+  assert.match(shown.stdout, /support 1/);
+  assert.equal(store.readJson(dir, `${base}/report.json`).kb_gates.gate_failures.support, 1);
+  assert.equal(fs.readFileSync(path.join(dir, base, 'report.md'), 'utf8'), shown.stdout);
+  fs.unlinkSync(path.join(dir, base, 'support.jsonl'));
+  const absent = await cli(['report', '--run', data.run.run_id, '--persona', dir], home);
+  assert.equal(absent.code, 0, absent.stderr);
+  assert.equal(store.readJson(dir, `${base}/report.json`).kb_gates.cases[0].incomplete, true);
+  fs.unlinkSync(path.join(dir, 'coverage.json'));
+  const uncovered = await cli(['report', '--run', data.run.run_id, '--persona', dir], home);
+  assert.equal(uncovered.code, 0, uncovered.stderr);
+  assert.match(uncovered.stdout, /kb gates: no_coverage/);
 });
