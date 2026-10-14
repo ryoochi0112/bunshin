@@ -9,6 +9,7 @@ const test = require('node:test');
 const store = require('../lib/store');
 const evalRun = require('../lib/eval-run');
 const judge = require('../lib/judge');
+const support = require('../lib/support');
 const twin = require('../lib/twin');
 const hosts = require('../lib/hosts');
 const command = require('../lib/commands/eval');
@@ -47,7 +48,8 @@ function boundFixture(t) {
 const kbReply = 'Cloudberry Lantern uses the fictional model Akari. [demo.model.provider]';
 const passingGates = { citation: true, resolves: true, current: true, scrub: true };
 const kbRecording = (text = kbReply) => recording((input) => ({
-  text: input.outputSchema ? JSON.stringify(valid) : text, model: 'fake-returned',
+  text: input.outputSchema === support.outputSchema ? JSON.stringify({ verdict: 'supported', reason: 'Synthetic support.' })
+    : input.outputSchema ? JSON.stringify(valid) : text, model: 'fake-returned',
 }));
 
 test('draft shape is recorded only on bound spec-answer rows', async (t) => {
@@ -219,7 +221,8 @@ test('bound eval drafts use KB rules only for spec-answer and preserve idea-disc
     } else {
       for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(row, field), false);
     }
-    const judgeCalls = adapters.calls.slice(index * 4 + 1, index * 4 + 4);
+    const judgeStart = index * 4 + 1 + (specAnswer ? 1 : 0);
+    const judgeCalls = adapters.calls.slice(judgeStart, judgeStart + judge.VOTES);
     assert.equal(judgeCalls.length, judge.VOTES);
     for (const call of judgeCalls) {
       assert.equal(call.tools, 'none');
@@ -313,8 +316,13 @@ test('bound rejudge copies the source digest and draft fields after the KB chang
   assert.deepEqual(result, { run_id: result.run_id, drafted: 0, judged: 3, errors: 0 });
   assert.deepEqual(store.readJson(dir, `evals/${result.run_id}/run.json`).kb, sourceKb);
   assert.deepEqual(store.readJsonl(dir, `evals/${result.run_id}/drafts.jsonl`), drafts);
-  assert.equal(adapters.calls.length, drafts.length * judge.VOTES);
-  assert.ok(adapters.calls.every((call) => call.outputSchema === judge.outputSchema && call.model === 'new-judge'));
+  assert.equal(adapters.calls.length, drafts.length * judge.VOTES + 1);
+  assert.ok(adapters.calls.every((call) => [judge.outputSchema, support.outputSchema].includes(call.outputSchema) && call.model === 'new-judge'));
+  assert.equal(adapters.calls.filter((call) => call.outputSchema === judge.outputSchema).length, drafts.length * judge.VOTES);
+  assert.equal(adapters.calls.filter((call) => call.outputSchema === support.outputSchema).length, 1);
+  assert.equal(store.readJson(dir, `evals/${result.run_id}/run.json`).support_rubric, support.rubricHash());
+  assert.deepEqual(store.readJsonl(dir, `evals/${result.run_id}/support.jsonl`)[0].sentences,
+    [{ index: 0, ids: ['demo.model.provider'], verdict: 'supported' }]);
 });
 
 test('unbound eval and rejudge add no KB fields to runs or drafts', async (t) => {
@@ -880,4 +888,130 @@ test('a done balance with no N or no S example, or an oversized block, is refuse
     assert.equal(adapters.calls.length, 0);
     assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
   }
+});
+
+test('support runs before send-as-is votes, records safe rows, and resumes without repeating cases', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  const text = `${kbReply}\nAnother supported fact. [demo.model.provider]\nUnknown fact. [demo.model.missing]\nMixed ids. [demo.model.provider] [demo.model.missing]\nLumaClient fact. [demo.model.provider]\n> Quoted fact. [demo.model.provider]\nNeeds human.\nReason: Review needed.`;
+  store.writeText(path.dirname(kbDir), 'demo.scrub.txt', 'LumaClient\n', { synthetic: true });
+  const adapters = kbRecording(text);
+  const result = await evalRun.run(dir, { env, drafter: 'fake:draft-model', judge: 'fake:judge-model', hosts: adapters });
+  const config = store.readJson(dir, `evals/${result.run_id}/run.json`);
+  assert.equal(config.support_rubric, support.rubricHash());
+  const calls = adapters.calls.filter((input) => input.outputSchema === support.outputSchema);
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.model, 'judge-model');
+    assert.equal(call.host, 'fake');
+    assert.equal(call.tools, 'none');
+    assert.equal(call.system, support.system());
+    const data = kb.load(kbDir);
+    assert.equal(call.prompt, support.buildPrompt({ text: call === calls[0] ? kbReply : 'Another supported fact. [demo.model.provider]' },
+      [data.entries.find((entry) => entry.id === 'demo.model.provider')]));
+    for (const value of store.readJsonl(dir, 'cases.jsonl')) {
+      for (const secret of [value.question.text, value.reference_answer, ...value.context.map((row) => row.text)]) {
+        assert.ok(!call.prompt.includes(secret));
+      }
+    }
+    for (const secret of ['LumaClient', 'Unknown fact', 'Mixed ids', 'Quoted fact', 'Review needed', 'サンプルの承認済み項目']) {
+      assert.ok(!call.prompt.includes(secret));
+    }
+  }
+  assert.deepEqual(adapters.calls.slice(8).map((call) => call.outputSchema || null),
+    [null, support.outputSchema, support.outputSchema, judge.outputSchema, judge.outputSchema, judge.outputSchema]);
+  const rows = store.readJsonl(dir, `evals/${result.run_id}/support.jsonl`);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(Object.keys(rows[0]).sort(), ['at', 'case_id', 'judge', 'sentences']);
+  assert.equal(rows[0].case_id, 'sample-13');
+  assert.deepEqual(rows[0].sentences, [0, 1].map((index) => ({ index, ids: ['demo.model.provider'], verdict: 'supported' })));
+  assert.deepEqual(rows[0].judge, { host: 'fake', model: 'fake-returned' });
+  assert.ok(Number.isFinite(Date.parse(rows[0].at)));
+  for (const secret of ['Cloudberry', 'LumaClient', 'Synthetic reason', 'claim', 'text']) assert.ok(!JSON.stringify(rows).includes(secret));
+  const resumedHosts = kbRecording(text);
+  await evalRun.run(dir, { env, runId: result.run_id, hosts: resumedHosts });
+  assert.equal(resumedHosts.calls.length, 0);
+  assert.deepEqual(store.readJsonl(dir, `evals/${result.run_id}/support.jsonl`), rows);
+});
+
+test('support skips all ineligible sentences but still records a completed case', async (t) => {
+  for (const text of ['Unknown. [demo.model.missing]', 'Uncited.', 'Not covered.\nClosest topic: model',
+    'Needs human.\nReason: Review needed.', '> Quote. [demo.model.provider]']) {
+    const { dir, env } = boundFixture(t);
+    const adapters = kbRecording(text);
+    const result = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: adapters });
+    assert.equal(adapters.calls.filter((call) => call.outputSchema === support.outputSchema).length, 0);
+    const [row] = store.readJsonl(dir, `evals/${result.run_id}/support.jsonl`);
+    assert.equal(row.case_id, 'sample-13');
+    assert.deepEqual(row.sentences, []);
+    assert.deepEqual(row.judge, { host: 'fake', model: null });
+  }
+  const dir = fixture(t);
+  const adapters = kbRecording();
+  const result = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: adapters });
+  assert.equal(adapters.calls.filter((call) => call.outputSchema === support.outputSchema).length, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'evals', result.run_id, 'support.jsonl')), false);
+  assert.equal(Object.hasOwn(store.readJson(dir, `evals/${result.run_id}/run.json`), 'support_rubric'), false);
+});
+
+test('bound support rubric changes refuse resume before calls or writes, including the command', async (t) => {
+  const { dir, env } = boundFixture(t);
+  const result = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: kbRecording() });
+  const files = ['run.json', 'drafts.jsonl', 'judgments.jsonl', 'support.jsonl'];
+  const snapshot = () => files.map((file) => fs.readFileSync(path.join(dir, 'evals', result.run_id, file), 'utf8'));
+  const before = snapshot();
+  t.mock.method(support, 'rubricHash', () => 'changed');
+  const adapters = kbRecording();
+  await assert.rejects(evalRun.run(dir, { env, runId: result.run_id, hosts: adapters }),
+    { message: 'eval run: support rubric differs from run' });
+  assert.equal(adapters.calls.length, 0);
+  assert.deepEqual(snapshot(), before);
+  const previousHome = process.env.BUNSHIN_HOME;
+  process.env.BUNSHIN_HOME = env.BUNSHIN_HOME;
+  let shown;
+  try { shown = await cli(['run', '--run', result.run_id, '--persona', dir], env); } finally {
+    if (previousHome === undefined) delete process.env.BUNSHIN_HOME;
+    else process.env.BUNSHIN_HOME = previousHome;
+  }
+  assert.equal(shown.code, 1);
+  assert.equal(shown.stdout, '');
+  assert.equal(shown.stderr, 'eval run: support rubric differs from run\n');
+  assert.deepEqual(snapshot(), before);
+});
+
+test('support host failure writes no partial row and resumes; a saved support row survives judge failure', async (t) => {
+  for (const failSupport of [true, false]) {
+    const { dir, env } = boundFixture(t);
+    store.writeJsonl(dir, 'pairs.jsonl', store.readJsonl(dir, 'pairs.jsonl')
+      .map((pair) => pair.id === 'sample-10' ? { ...pair, layer: 'knowledge' } : pair));
+    let supports = 0;
+    const adapters = recording((input) => {
+      if (input.outputSchema === support.outputSchema) {
+        if (++supports === 2 && failSupport) throw new Error('private host error');
+        return { text: JSON.stringify({ verdict: 'supported', reason: 'Synthetic support.' }), model: 'support-model' };
+      }
+      if (input.outputSchema === judge.outputSchema) throw new Error('private host error');
+      return { text: `${kbReply}\n${kbReply}`, model: 'draft-model' };
+    });
+    await assert.rejects(evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', limit: 1, hosts: adapters }),
+      /eval run: host error on case sample-10 \(fake\); rerun with --run \S+ to resume/);
+    const runId = fs.readdirSync(path.join(dir, 'evals'))[0];
+    assert.equal(store.readJsonl(dir, `evals/${runId}/support.jsonl`).length, failSupport ? 0 : 1);
+    assert.deepEqual(store.readJsonl(dir, `evals/${runId}/judgments.jsonl`), []);
+    const resumedHosts = kbRecording();
+    await evalRun.run(dir, { env, runId, hosts: resumedHosts });
+    assert.equal(resumedHosts.calls.filter((call) => call.outputSchema === support.outputSchema).length, failSupport ? 2 : 0);
+    assert.equal(store.readJsonl(dir, `evals/${runId}/support.jsonl`).length, 1);
+    assert.equal(resumedHosts.calls.filter((call) => call.outputSchema === judge.outputSchema).length, 3);
+  }
+});
+
+test('twice malformed support is support_error and the send-as-is judge still runs', async (t) => {
+  const { dir, env } = boundFixture(t);
+  const adapters = recording((input) => ({ text: input.outputSchema === support.outputSchema ? 'private malformed output'
+    : input.outputSchema ? JSON.stringify(valid) : kbReply, model: 'returned' }));
+  const result = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: adapters });
+  assert.equal(adapters.calls.filter((call) => call.outputSchema === support.outputSchema).length, 2);
+  assert.deepEqual(store.readJsonl(dir, `evals/${result.run_id}/support.jsonl`)[0].sentences,
+    [{ index: 0, ids: ['demo.model.provider'], verdict: 'support_error' }]);
+  assert.equal(store.readJsonl(dir, `evals/${result.run_id}/judgments.jsonl`).length, 3);
 });
