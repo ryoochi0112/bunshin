@@ -21,6 +21,7 @@ The sample persona is fictional. It uses the name Sora Aoki and the fictional pr
 | `conflicts.jsonl` | Conflicts between interview answers and observed behavior. |
 | `identity.json` | Identity traits and their evidence. |
 | `identity.md` | Rendered identity. Bunshin creates it from `identity.json`. |
+| `coverage.json` | Optional held-out coverage labels for a bound knowledge base. `bunshin coverage import` creates it. |
 
 The sample has no `interview-state.json` because it has no active session.
 
@@ -390,14 +391,28 @@ Each line in `evals/<run_id>/drafts.jsonl` records a draft. The layer recorded h
 | `gates.resolves` | `false` when any sentence has an `unknown-id` problem. |
 | `gates.current` | `false` when any sentence has a `not-citable` problem (including draft, conflict, retired or flagged entries). |
 | `gates.scrub` | `false` when any sentence has a `scrub` problem against the KB's optional sibling `<name>.scrub.txt` file. |
+| `shape` | Present only on `spec-answer` rows for a bound persona: the form of the answer, `{abstain, handback, facts}`. |
+| `shape.abstain` | `true` when the draft contains the exact two-line abstain form. |
+| `shape.handback` | `true` when the draft contains the exact two-line hand-back form. |
+| `shape.facts` | Integer count of sentences that are not exempt. Exempt lines are the abstain form, the hand-back form and `>` quotes. |
 
-Bound personas draft `spec-answer` cases with `tools: 'none'` and no `allowedTools`. The bound KB must parse and pass `kb check` before its digest is used. The gates come from `checkSpecReply` against the loaded KB and scrub list; they do not change the judge loop or establish factual correctness. The exact abstain and hand-back forms pass the citation gates, while their details still receive the scrub check. `idea-discussion` cases on bound personas and all cases on unbound personas use `tools: 'notion-read'` with `allowedTools` and omit `kb`, `cited` and `gates`.
+Bound personas draft `spec-answer` cases with `tools: 'none'` and no `allowedTools`. The bound KB must parse and pass `kb check` before its digest is used. The gates come from `checkSpecReply` against the loaded KB and scrub list; they do not change the judge loop or establish factual correctness. The exact abstain and hand-back forms pass the citation gates, while their details still receive the scrub check. `idea-discussion` cases on bound personas and all cases on unbound personas use `tools: 'notion-read'` with `allowedTools` and omit `kb`, `cited`, `gates` and `shape`.
 
 ### Example: `drafts.jsonl`
 
 ```json
 {"case_id":"sample-10","layer":"judgment","skill":"idea-discussion","draft":"Try two search labels before widening the experiment.","drafter":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
 ```
+
+`shape` records what kind of answer the draft is, so that `eval report` can compare it with a coverage label. It is computed from the same check as `gates` and adds no model call. A `spec-answer` row on a bound persona looks like this, using the demo KB:
+
+### Example: bound `spec-answer` row
+
+```json
+{"case_id":"sample-13","layer":"knowledge","skill":"spec-answer","draft":"Cloudberry Lantern uses the fictional model Akari. [demo.model.provider]","drafter":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z","kb":{"name":"demo","digest_hash":"6aa2e609f7b5a5bb10967907697ca9097d4f5375a7081a33046bcf8ea691c927"},"cited":["demo.model.provider"],"gates":{"citation":true,"resolves":true,"current":true,"scrub":true},"shape":{"abstain":false,"handback":false,"facts":1}}
+```
+
+An abstaining draft has `"shape":{"abstain":true,"handback":false,"facts":0}`. A hand-back after one cited fact has `"shape":{"abstain":false,"handback":true,"facts":1}`. Rows from runs made before `shape` existed have no `shape`; the report grades them as `ungraded`.
 
 Shadow stores one draft object in `shadow/<id>/draft.json` with the same `layer`, `skill`, `draft`, `drafter`, `at` and optional `kb`/`cited`/`gates` fields, present only for bound-persona `spec-answer` drafts. It uses `format_version: 1` and `id` instead of `case_id`. When gates are present, `shadow show` prints a line after the draft, for example `gates: citation=true resolves=true current=true scrub=true`.
 
@@ -406,6 +421,38 @@ Shadow stores one draft object in `shadow/<id>/draft.json` with the same `layer`
 `evals/<run_id>/run.json` pins the persona version, drafter and judge settings, rubric, judge examples, vote count, start time and optional limit. A new run on a bound persona also records `kb: {name, digest_hash}`, using the same KB name and SHA-256 digest hash as its `spec-answer` draft rows, even when the run selects only `idea-discussion` cases. Unbound runs omit `kb`.
 
 `eval run --run <run_id>` refuses a changed digest with `eval run: kb digest differs from run` before any host call or run-file write. Adding or removing a persona's KB binding also changes the digest comparison. `eval run --rejudge-from <run_id>` copies the source run's `kb` metadata and draft rows, including their `cited` and `gates` fields, even if the current KB has changed. It judges the saved drafts without recomposing or drafting them.
+
+A new run on a bound persona also records `support_rubric`, the first 16 hex characters of the SHA-256 hash of `templates/support-judge.md` (the support judge's system text). Unbound runs omit it. `eval run --run <run_id>` on a bound persona refuses a changed hash with `eval run: support rubric differs from run`. A bound run made before `support_rubric` existed has no hash, so it cannot be resumed; start a new run instead. `--rejudge-from` always records the current `support_rubric` for the new run.
+
+### Example: `run.json`
+
+```json
+{"run_id":"2026-10-20-01","persona_version":1,"drafter":{"host":"fake","model":null},"judge":{"host":"fake","model":null},"judge_rubric":"228729cf56f6ff4c","judge_examples":null,"judge_votes":3,"started_at":"2026-10-20T00:00:00.000Z","limit":null,"kb":{"name":"demo","digest_hash":"6aa2e609f7b5a5bb10967907697ca9097d4f5375a7081a33046bcf8ea691c927"},"support_rubric":"e7d793a16fd6b136"}
+```
+
+## Support record: `support.jsonl`
+
+A bound run also writes `evals/<run_id>/support.jsonl`. This is gate 4: a separate judge call per cited sentence asks whether the cited KB entries support that sentence. It runs for each `spec-answer` draft after the draft (or the draft copied by `--rejudge-from`) and before the send-as-is judge. The judge is the run's `judge` host and model. Each call is made with `tools: 'none'` and sees only the one sentence and the `id`, `claim` and `select` of the entries it cites. It never sees the question, context, reference answer, entry `note` or other sentences. The row stores no sentence text and no entry text.
+
+A sentence is judged only when it is not exempt, cites at least one id, every id resolves to exactly one entry, and the sentence is not `[redacted]`. Other sentences get no entry in `sentences`; the report treats them through the structural gates instead. Malformed judge output is retried once, then recorded as `support_error`. A host error stops the run with the usual resume message, and a resumed run skips cases that already have a row.
+
+| Field | Meaning |
+| --- | --- |
+| `case_id` | Held-out case id of a `spec-answer` draft. |
+| `sentences` | One object per judged sentence, in draft order. |
+| `sentences[].index` | Zero-based index of the sentence among the sentences found in the draft. |
+| `sentences[].ids` | Cited entry ids of that sentence. |
+| `sentences[].verdict` | `supported`, `partly` (any part of the sentence is not stated by the entries), `not_supported`, or `support_error`. |
+| `judge` | Host and returned model object. |
+| `judge.host` | Judge host. |
+| `judge.model` | Recorded model name, or `null` for default. |
+| `at` | ISO timestamp when the row was written, after all verdicts for the case are in. |
+
+### Example: `support.jsonl`
+
+```json
+{"case_id":"sample-13","sentences":[{"index":0,"ids":["demo.model.provider"],"verdict":"supported"}],"judge":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
+```
 
 ## Judgment record: `judgments.jsonl`
 
@@ -561,6 +608,236 @@ The Markdown layout has eight required lines: persona/version/date, drafted coun
 
 After those lines, show only applicable lines in this order: `judge errors: <n> (excluded from rates)` when nonzero, `not judged: <n>` when nonzero, `not drafted: <n>` when nonzero, `incomplete: <done> of <n> held-out cases drafted and judged — no launch-bar claim` when `complete` is false, and `launch bar basis: <display_name>'s ratings (<n> rated)` whenever the basis is owner ratings. The file ends with one newline.
 
+
+## Coverage labels: `coverage.json`
+
+`bunshin coverage import <file>` writes `<persona>/coverage.json`: the owner's labels saying, for each held-out case, how well the bound knowledge base covers the question. The labels turn a draft's shape into a graded outcome in the report's `kb_gates` section. The file belongs to a persona and a bound KB; it is private persona data and never stored in the repository.
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | Format version, `1`. |
+| `kb` | Name of the bound knowledge base at import time, for example `demo`. |
+| `kb_digest_hash` | SHA-256 hex hash of the citable digest of that KB at import time. Reports compare it with the run's `kb.digest_hash`. |
+| `imported_at` | ISO timestamp of the import. |
+| `cases` | Object keyed by held-out case id. |
+| `cases.<id>.coverage` | `C` (the KB covers the question), `P` (it covers part and a person must decide the rest), `N` (it does not cover it), or `X` (excluded from grading). |
+| `cases.<id>.entries` | Ids of the verified, unflagged entries that cover the case; `[]` when the import row had none. |
+
+The import file is a JSON object whose `cases` array holds `{id, coverage, entries}` rows; `entries` is optional and other keys are ignored. Import refuses, writes nothing and exits 1 when the persona has no bound KB, a label is not `C`, `P`, `N` or `X`, an id is not a held-out pair of the persona, an id repeats, or an entry id is not a verified, unflagged entry of the bound KB. The message names the one-based row, for example `coverage import: row 2: Duplicate case id.`. A second import replaces the file.
+
+`bunshin coverage show` prints the counts and `kb digest <hash>`, with `· stale` appended when the KB name or digest differs from the bound KB now. A stale file makes the `kb_gates` status `coverage_stale` until you import again.
+
+### Example: `coverage.json`
+
+```json
+{
+  "format_version": 1,
+  "kb": "demo",
+  "kb_digest_hash": "6aa2e609f7b5a5bb10967907697ca9097d4f5375a7081a33046bcf8ea691c927",
+  "imported_at": "2026-10-20T00:00:00.000Z",
+  "cases": {
+    "sample-13": {
+      "coverage": "C",
+      "entries": [
+        "demo.model.provider"
+      ]
+    },
+    "sample-10": {
+      "coverage": "X",
+      "entries": []
+    }
+  }
+}
+```
+
+## KB gates: the `kb_gates` report section
+
+When a run has `kb` (a bound persona), `report.json` gains a `kb_gates` object and `report.md` gains the lines below. Reports of unbound runs are unchanged and have no `kb_gates`. `eval report` reads `support.jsonl` (empty when absent) and `coverage.json`, then grades each `spec-answer` draft of the run. Idea-discussion cases are not graded. Grading is a pure function of the run, its drafts, the support rows and the coverage file; it makes no host call.
+
+| Field | Meaning |
+| --- | --- |
+| `status` | `no_coverage`, `coverage_stale`, `incomplete`, `fail`, or `pass`, checked in this order (see below). |
+| `counts` | Cases per outcome: `answered`, `partial`, `abstained`, `wrong_abstain`, `handback_miss`, `over_answer`, `answered_not_covered`, `excluded`, `unlabelled`, `ungraded`. |
+| `gate_failures` | Cases that failed each gate: `citation`, `resolves`, `current`, `support`, `coverage`, `scrub`. A case that fails two gates counts once in each. |
+| `cases` | One row per graded case: `{id, label, outcome, pass, hard, miss, incomplete}`. |
+| `cases[].label` | `C`, `P`, `N`, `X`, or `null` when the case has no label. |
+| `cases[].outcome` | One of the outcomes in the table below. |
+| `cases[].hard` | Hard-failure gates of the case, in the order `citation`, `resolves`, `current`, `support`, `coverage`, `scrub`. |
+| `cases[].miss` | `true` for `wrong_abstain` and `handback_miss`. |
+| `cases[].incomplete` | `true` when the case cannot be graded yet. |
+| `cases[].pass` | `true` only when the case is not `excluded`, has no hard failure, no miss, and is not incomplete. |
+
+### Outcomes
+
+The outcome comes from the case's coverage label and the draft's `shape`:
+
+| Label | Draft shape | Outcome | Kind |
+| --- | --- | --- | --- |
+| `C` | `facts` > 0 | `answered` | pass if no hard failure |
+| `C` | `facts` = 0 | `wrong_abstain` | miss |
+| `P` | `facts` > 0 and `handback` | `partial` | pass if no hard failure |
+| `P` | `facts` > 0, no `handback` | `over_answer` | hard failure (`coverage`) |
+| `P` | `facts` = 0 | `wrong_abstain` | miss |
+| `N` | `abstain`, `facts` = 0 | `abstained` | pass |
+| `N` | `handback` only, `facts` = 0 | `handback_miss` | miss |
+| `N` | `facts` > 0 | `answered_not_covered` | hard failure (`coverage`) |
+| `N` | `facts` = 0, neither `abstain` nor `handback` | `ungraded` | incomplete |
+| `X` | any | `excluded` | not counted |
+| none | any | `unlabelled` | incomplete |
+
+Hard failures also come from `gates` (`citation`, `resolves`, `current`, `scrub`: a gate that is `false`) and from any support verdict that is `partly` or `not_supported` (`support`). A case is incomplete when its outcome is `ungraded` or `unlabelled`, a draft or its `gates` are missing or malformed, the `support.jsonl` row is missing, a verdict is `support_error`, or, with all four structural gates `true`, the support row has fewer sentences than `shape.facts`. A knowledge case with no draft is `ungraded`. A draft without `shape` (an old run) is `ungraded`.
+
+### Status
+
+`status` is the first that applies:
+
+1. `no_coverage`: the run has no `kb` or `coverage.json` does not exist.
+2. `coverage_stale`: `coverage.kb_digest_hash` differs from the run's `kb.digest_hash`.
+3. `incomplete`: the run has a `limit`, or any case is incomplete. This outranks `fail`.
+4. `fail`: any case has a hard failure.
+5. `pass`.
+
+Misses do not change `status`; they appear in the case lines. In `report.md` the status prints in lowercase.
+
+### Example: `kb_gates`
+
+```json
+{
+  "status": "pass",
+  "counts": {
+    "answered": 1,
+    "partial": 0,
+    "abstained": 0,
+    "wrong_abstain": 0,
+    "handback_miss": 0,
+    "over_answer": 0,
+    "answered_not_covered": 0,
+    "excluded": 0,
+    "unlabelled": 0,
+    "ungraded": 0
+  },
+  "gate_failures": {
+    "citation": 0,
+    "resolves": 0,
+    "current": 0,
+    "support": 0,
+    "coverage": 0,
+    "scrub": 0
+  },
+  "cases": [
+    {
+      "id": "sample-13",
+      "label": "C",
+      "outcome": "answered",
+      "pass": true,
+      "hard": [],
+      "miss": false,
+      "incomplete": false
+    }
+  ]
+}
+```
+
+### Example: `kb_gates` lines in `report.md`
+
+The two lines come after the other report lines. `hard failures <n>` is the sum of the six gate counts. One line follows for each case with a hard failure, a miss or an incomplete state: `- <case id> <label> <outcome>`, then the hard-failure gates. This example labels `sample-13` as `P` while the draft answers without a hand-back:
+
+```text
+kb gates: fail · hard failures 1 (citation 0 · resolves 0 · current 0 · support 0 · coverage 1 · scrub 0)
+coverage: answered 0 · partial 0 · abstained 0 · wrong abstain 0 · handback miss 0 · over-answer 1 · answered not covered 0 · excluded 0 · unlabelled 0
+- sample-13 P over_answer coverage
+```
+
+## Reliability report: `evals/reliability/`
+
+`bunshin eval report --runs <a>,<b>[,…]` compares two or more runs of the same inputs to show which cases pass every time. It reads each run's drafts, support rows and judgments with the current `coverage.json`, grades each run as in `kb_gates`, and writes `evals/reliability/<a>+<b>+….json` and `.md` (for example `2026-10-20-01+2026-10-20-02.json`), JSON first and Markdown second. It prints the Markdown. `--runs` cannot be combined with `--run`.
+
+The runs must share every frozen input and the same case ids (the first `limit` cases for a limited run). Otherwise the command exits 1, writes nothing and prints `eval report: runs differ in <field>`, where `<field>` is a `frozen` key or `cases`. An unknown run id prints `eval report: unknown run`. Fewer than two ids, a repeated id, an empty id or `--run` together with `--runs` is a usage error with exit 2.
+
+| Field | Meaning |
+| --- | --- |
+| `runs` | Compared run ids, in the order given. |
+| `frozen` | Inputs that must match in every run: `kb_digest_hash`, `persona_version`, `drafter`, `judge`, `judge_rubric`, `support_rubric`, `judge_examples_hash`, `coverage_hash`. Missing values are `null`. |
+| `frozen.coverage_hash` | First 16 hex characters of the SHA-256 hash of the canonical JSON of `coverage.json`. |
+| `per_run` | One object per run: `{run_id, kb_gates_status, send_as_is_rate}`. |
+| `per_run[].kb_gates_status` | The run's `kb_gates.status`. |
+| `per_run[].send_as_is_rate` | Send-as-is judgments divided by valid judgments (not judge errors) as a fraction; `null` when none. |
+| `cases` | One row per knowledge-layer case that is not labelled `X`: `{id, label, results, verdict}`. |
+| `cases[].results` | One entry per run, `pass`, `fail` or `incomplete`. A run whose status is `no_coverage` or `coverage_stale`, a missing row and an incomplete case all give `incomplete`. |
+| `cases[].verdict` | `incomplete` if any result is `incomplete`; otherwise `stable_pass` (all pass), `stable_fail` (all fail) or `unstable` (mixed). |
+| `counts` | Cases per verdict: `stable_pass`, `stable_fail`, `unstable`, `incomplete`. |
+| `status` | `incomplete` if any case is incomplete or any run's status is `incomplete`, `no_coverage` or `coverage_stale`; otherwise `fail` if any case is `stable_fail` or `unstable`; otherwise `pass`. So `pass` needs every labelled, non-`X` case to be `stable_pass`. |
+
+### Example: `reliability`
+
+```json
+{
+  "runs": [
+    "2026-10-20-01",
+    "2026-10-20-02"
+  ],
+  "frozen": {
+    "kb_digest_hash": "6aa2e609f7b5a5bb10967907697ca9097d4f5375a7081a33046bcf8ea691c927",
+    "persona_version": 1,
+    "drafter": {
+      "host": "fake",
+      "model": null
+    },
+    "judge": {
+      "host": "fake",
+      "model": null
+    },
+    "judge_rubric": "228729cf56f6ff4c",
+    "support_rubric": "e7d793a16fd6b136",
+    "judge_examples_hash": null,
+    "coverage_hash": "85e5ada023ef3147"
+  },
+  "per_run": [
+    {
+      "run_id": "2026-10-20-01",
+      "kb_gates_status": "pass",
+      "send_as_is_rate": 1
+    },
+    {
+      "run_id": "2026-10-20-02",
+      "kb_gates_status": "pass",
+      "send_as_is_rate": 1
+    }
+  ],
+  "cases": [
+    {
+      "id": "sample-13",
+      "label": "C",
+      "results": [
+        "pass",
+        "pass"
+      ],
+      "verdict": "stable_pass"
+    }
+  ],
+  "counts": {
+    "stable_pass": 1,
+    "stable_fail": 0,
+    "unstable": 0,
+    "incomplete": 0
+  },
+  "status": "pass"
+}
+```
+
+### Example: `reliability` Markdown
+
+```text
+bunshin eval reliability — pass
+frozen: {"kb_digest_hash":"6aa2e609f7b5a5bb10967907697ca9097d4f5375a7081a33046bcf8ea691c927","persona_version":1,"drafter":{"host":"fake","model":null},"judge":{"host":"fake","model":null},"judge_rubric":"228729cf56f6ff4c","support_rubric":"e7d793a16fd6b136","judge_examples_hash":null,"coverage_hash":"85e5ada023ef3147"}
+2026-10-20-01 · pass · send as-is 100%
+2026-10-20-02 · pass · send as-is 100%
+counts: stable pass 1 · stable fail 0 · unstable 0 · incomplete 0
+unstable: none
+incomplete: none
+```
+
+The last two lines list the case ids of each kind, joined by `, `, or `none`.
 
 ## Calibration queue item: `queue.jsonl`
 

@@ -137,7 +137,7 @@ test('JSON examples parse, match the sample except for the fictional case, and p
     ['identity.json', store.readJson(sampleDir, 'identity.json'), (value) => identity.validate(sampleDir, value)],
   ];
 
-  assert.equal([...formats.matchAll(/```json\s*\n/g)].length, examples.length + 6);
+  assert.equal([...formats.matchAll(/```json\s*\n/g)].length, examples.length + 12);
   for (const [file, sampleValue, validator] of examples) {
     const value = documentedExample(file);
     if (file === 'cases.jsonl') {

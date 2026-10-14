@@ -88,6 +88,22 @@ See [docs/formats.md](docs/formats.md) for the plain-file persona, identity, cas
 
 A knowledge base holds reviewed, citable product facts, kept under `$BUNSHIN_HOME/kb/<name>` and managed with `bunshin kb`. See [docs/kb-format.md](docs/kb-format.md) for the layout, entry grammar, statuses, scrub list and citation syntax. A synthetic demo is at `sample/kb/demo`. Bind a knowledge base to a persona with `bunshin persona kb <name>` (which sets the optional `kb` field in `persona.json`), and spec answers then cite only its verified entries. `bunshin persona kb` shows the binding and `bunshin persona kb --unset` removes it. Run `/bunshin:kb-compile` to turn one Notion page, Slack thread or pasted text into draft entries that the owner approves.
 
+### Measuring knowledge base answers
+
+With a bound knowledge base, `eval run` records each spec answer's shape and the check of every cited sentence by a support judge. `eval report` then grades them against your coverage labels. Labels say, for each held-out case, whether the knowledge base covers the question fully (`C`), in part (`P`), not at all (`N`) or should be excluded (`X`). See [docs/formats.md](docs/formats.md) for `coverage.json`, `support.jsonl` and the `kb_gates` section.
+
+```sh
+node bin/bunshin.js coverage import <file> [--persona <dir>]
+node bin/bunshin.js coverage show [--persona <dir>]
+node bin/bunshin.js eval report --runs <run_a>,<run_b>[,…] [--persona <dir>]
+```
+
+`coverage import` reads a JSON file with a `cases` array of `{id, coverage, entries}` rows, checks it against the held-out pairs and the bound knowledge base, and writes `coverage.json` in the persona directory. It prints `Imported <n> labels (C <a> · P <b> · N <c> · X <d>) for kb <name>`. A bad row refuses the whole import and names the row. `coverage show` prints the counts and the knowledge base digest, and `stale` when the knowledge base changed after the import.
+
+`eval report --runs` compares two or more runs that share the same knowledge base, persona version, drafter, judge, rubrics, judge examples, coverage file and cases. It writes `evals/reliability/<a>+<b>+….json` and `.md`, and marks each case `stable_pass`, `stable_fail`, `unstable` or `incomplete`. Runs that differ in any of those inputs are refused.
+
+`make harness` checks the support judge itself on built-in synthetic sentence and entry pairs: a supporting entry must give `supported` and a non-supporting one must not, and a short and a long supporting entry must both give `supported`. It runs `node scripts/harness.js --host claude`, so it makes real model calls and needs an authenticated Claude Code CLI. It is manual and is not part of `make verify`.
+
 ## Status
 
 M2: Claude Code path covers criteria 1–14: harvest, held-out split, build, interview, diagnose, spec answers, idea discussion, shadow, eval, calibration, launch-bar checks, export, privacy and open formats.
