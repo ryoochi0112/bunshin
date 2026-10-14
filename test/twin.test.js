@@ -217,20 +217,26 @@ test('templates state persona, language, privacy, live citations and named objec
   assert.match(idea, /priority name from the identity/i);
 });
 
-test('KB template pins digest-only citations, exact fallback forms and confirm-not-rewrite guidance', () => {
+test('KB template pins digest-only citations, exact fallback forms and strict reply shape', () => {
   const spec = template('spec-answer-kb');
   assert.match(spec, /^---\nname: spec-answer-kb\n/);
   assert.ok(spec.endsWith('# Knowledge base digest\n'));
   for (const sentence of [
     'Use only facts in the knowledge base digest below.',
-    'Every factual sentence ends with one or more `[<entry id>]` citations taken only from the digest.',
+    'Every cited sentence ends with one or more `[<id>]` citations taken only from the digest.',
     "Answer in the question's main language.",
     'Do not add a sources block.',
     'Never mention or quote `note` text.',
-    'When no digest entry covers the question, or the digest is empty, use exactly one of these two-line abstain forms:',
-    'For a commitment, date, price or contract term, or when two digest entries disagree, use exactly one of these two-line hand-back forms:',
-    'When the user asks you to check their draft or their understanding, confirm the parts the digest supports in a short first sentence and do not rewrite them. Name only the parts that are wrong or unsupported.',
+    'For an N question (no coverage), or when the digest is empty, use only one of these two-line abstain forms:',
+    'For a commitment, date, price or contract term, or when two digest statements disagree, use only one of these two-line hand-back forms:',
+    'For a P question (partial coverage), answer the covered part with cited sentences, then use the hand-back form whose `Reason:` names the uncovered part.',
+    'Each line must be a cited sentence, the optional thanks line, a `>` quote, or part of a fixed two-line form.',
+    'No headings, no bold-only lines, no connecting or hedging sentences, and no @mentions.',
+    'A `- ` bullet is allowed only as a cited sentence.',
+    'You may use one optional thanks line as the first non-empty line only; the whole line must exactly match one of these phrases:',
+    'When the user asks you to check their draft or their understanding, confirm supported parts with cited sentences and do not rewrite them. Identify wrong parts with cited sentences; use the hand-back form for unsupported parts.',
   ]) assert.ok(spec.includes(sentence), sentence);
+  for (const phrase of kbCite.ACK_LINES) assert.ok(spec.includes(`\`${phrase}\``));
   const forms = [...spec.matchAll(/^```text\n([^`]+)\n```$/gm)].map((match) => match[1]);
   assert.deepEqual(forms, [
     '該当する情報がありません。\nClosest topic: <topic>',

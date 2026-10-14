@@ -258,3 +258,25 @@ test('kb-format doc abstain example passes kb-cite check', () => {
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.abstain, true);
 });
+
+test('kb-format doc covers the SSOT files, commands, findings, states and ack phrases', () => {
+  const cite = require('../lib/kb-cite');
+  const doc = fs.readFileSync(path.join(root, 'docs', 'kb-format.md'), 'utf8');
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  for (const name of ['ssot.md', 'ssot-approvals.jsonl', '`digest`', 'coverage_stale', '/bunshin:kb-ssot']) {
+    assert.ok(doc.includes(name), `kb-format.md must mention ${name}`);
+  }
+  for (const command of ['draft', 'approve', 'status', 'show', 'enable', 'disable']) {
+    assert.ok(doc.includes(`bunshin kb ssot ${command} `), `Missing kb ssot ${command}`);
+  }
+  for (const finding of ['ssot-parse', 'ssot-backs', 'ssot-pii', 'ssot-scrub', 'ssot-entry-slug', 'ssot-empty', 'ssot-approvals']) {
+    assert.ok(doc.includes(`\`${finding}\``), `Missing finding ${finding}`);
+  }
+  for (const state of ['approved', 'draft', 'changed', 'stale', 'blocked']) {
+    assert.match(doc, new RegExp(`^\\| \`${state}\` \\|`, 'm'), `Missing state ${state}`);
+  }
+  for (const phrase of cite.ACK_LINES) assert.ok(doc.includes(`\`${phrase}\``), `Missing ack phrase ${phrase}`);
+  assert.match(readme, /\/bunshin:kb-ssot/);
+  assert.match(readme, /kb ssot approve/);
+  assert.match(readme, /kb ssot enable/);
+});

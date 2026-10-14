@@ -10,10 +10,84 @@ const store = require('../lib/store');
 const command = require('../lib/commands/kb');
 const cite = require('../lib/kb-cite');
 const kbCheck = require('../lib/kb-check');
+const ssot = require('../lib/kb-ssot');
 const twinCheck = require('../lib/twin-check');
+const kbGates = require('../lib/kb-gates');
 
 const sample = path.resolve(__dirname, '../sample/kb/demo');
 const id = 'demo.model.provider';
+
+const ackLines = ['ありがとうございます！', 'ありがとうございます。', '確認ありがとうございます！',
+  '確認ありがとうございます。', 'ご確認ありがとうございます！', 'ご確認ありがとうございます。',
+  'Thanks!', 'Thanks for checking.'];
+
+test('ack allowlist is exact and ordered; only the first non-empty whole line is exempt', () => {
+  assert.deepEqual(cite.ACK_LINES, ackLines);
+  const kbData = kb.load(sample);
+  const answer = `Sample fact [${id}].\n- Another fact [${id}].`;
+  for (const phrase of ackLines) {
+    for (const prefix of ['', '\n \r\n']) {
+      const text = `${prefix}  ${phrase}  \r\n${answer}`;
+      const result = cite.check(kbData, text);
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.sentences[0], { text: phrase, ids: [], problems: [], exempt: true });
+      assert.equal(result.sentences.length, 3);
+      assert.deepEqual(result.cited, [id]);
+      assert.equal(twinCheck.checkSpecReply(text, { kbData }).facts, 2);
+    }
+  }
+});
+
+for (const [name, text, exemptions] of [
+  ['ack plus fact on one line', 'ありがとうございます！東京リージョンです。', 0],
+  ['ack on line two', `Sample fact [${id}].\nありがとうございます！`, 0],
+  ['two ack lines', 'ありがとうございます！\nThanks for checking.', 1],
+  ['near-miss ack', 'ありがとうございます!!', 0],
+  ['uncited heading', `**結論**\nSample fact [${id}].`, 0],
+  ['prose hedge', `Sample fact [${id}].\n手元の資料では確認できませんでした。`, 0],
+  ['ack after a quote', '> Sample quotation.\nThanks!', 0],
+  ['ack after a fallback pair', 'Not covered.\nClosest topic: model\nThanks!', 0],
+]) {
+  test(`${name} still fails citation gate`, () => {
+    const result = cite.check(kb.load(sample), text);
+    assert.equal(result.ok, false);
+    assert.ok(result.sentences.some((sentence) => sentence.problems.includes('no-citation')));
+    assert.equal(result.sentences.filter((sentence) => sentence.exempt).length, exemptions);
+  });
+}
+
+test('every exempt ack still receives scrub checks without echoing matches', () => {
+  const kbData = kb.load(sample);
+  for (const phrase of ackLines) {
+    const result = cite.check(kbData, phrase, { scrub: [phrase] });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.sentences, [{ text: '[redacted]', ids: [], problems: ['scrub'], exempt: true }]);
+    assert.equal(JSON.stringify(result).includes(phrase), false);
+    assert.equal(twinCheck.checkSpecReply(phrase, { kbData, scrub: [phrase] }).facts, 0);
+  }
+});
+
+test('cited facts followed by hand-back grade partial for P coverage', () => {
+  const kbData = kb.load(sample);
+  for (const form of ['要確認（人の判断が必要です）。', 'Needs human.']) {
+    const text = `Thanks!\nSample fact [${id}].\n${form}\nReason: The retention period is not covered.`;
+    const shape = twinCheck.checkSpecReply(text, { kbData });
+    assert.equal(shape.ok, true);
+    assert.equal(shape.handback, true);
+    assert.equal(shape.facts, 1);
+    const result = kbGates.grade({
+      run: { kb: { digest_hash: 'digest' } }, cases: [{ id: 'sample-13', layer: 'knowledge' }],
+      drafts: [{ case_id: 'sample-13', skill: 'spec-answer', kb: { name: 'demo' }, shape,
+        gates: { citation: true, resolves: true, current: true, scrub: true } }],
+      support: [{ case_id: 'sample-13', sentences: [{ verdict: 'supported' }] }],
+      coverage: { kb_digest_hash: 'digest', cases: { 'sample-13': { coverage: 'P', entries: [id] } } },
+    });
+    assert.equal(result.counts.partial, 1);
+    assert.equal(result.cases[0].outcome, 'partial');
+    assert.equal(result.cases[0].pass, true);
+    assert.equal(result.status, 'pass');
+  }
+});
 
 test('KB reply shape counts facts and marks existing exempt sentence rows', () => {
   const kbData = kb.load(sample);
@@ -332,4 +406,42 @@ test('CLI accepts empty scrub lists and hand-backs, and fails closed on unreadab
   fs.mkdirSync(`${dir}.scrub.txt`);
   assert.equal(command.run(['cite', 'demo', '--draft', draft], io), 1);
   assert.deepEqual(output(), { stdout: '', stderr: 'Cannot read scrub list.\n' });
+});
+
+test('ssot citations resolve approved statements and distinguish existing from unknown ids', (t) => {
+  const { dir } = fixture(t);
+  store.writeJson(dir, 'kb.json', { ...kb.load(dir).manifest, digest: 'ssot' }, { synthetic: true });
+  store.writeText(dir, 'ssot.md', '# Demo SSOT\n'
+    + '## model\ntitle: Model\n### demo.model.s1\ntext: Sample model.\nbacks: demo.model.provider\n'
+    + '## stale\ntitle: Stale\n### demo.stale.s1\ntext: Old sample.\nbacks: demo.model.provider\n'
+    + '## draft\ntitle: Draft\n### demo.draft.s1\ntext: Draft sample.\nbacks: demo.model.provider\n',
+  { synthetic: true });
+  let data = kb.load(dir);
+  store.writeJsonl(dir, 'ssot-approvals.jsonl', data.ssot.sections.slice(0, 2).map((section) => ({
+    id: section.section, approved_at: '2026-10-14', text_hash: ssot.textHash(section),
+    backing_hash: section.section === 'stale' ? '0'.repeat(64) : ssot.backingHash(section, data),
+  })), { synthetic: true });
+  data = kb.load(dir);
+  assert.deepEqual(data.errors, []);
+  assert.equal(ssot.states(data).get('stale'), 'stale');
+  for (const [citedId, problems] of [
+    ['demo.model.s1', []], [id, ['not-citable']], ['demo.model.region', ['not-citable']],
+    ['demo.stale.s1', ['not-citable']], ['demo.draft.s1', ['not-citable']],
+    ['demo.missing.s1', ['unknown-id']],
+  ]) {
+    const text = `Sample fact [${citedId}].`;
+    assert.deepEqual(cite.check(data, text), {
+      ok: problems.length === 0, abstain: false, handback: false, cited: [citedId],
+      sentences: [{ text, ids: [citedId], problems, exempt: false }],
+    });
+  }
+  data.ssot.sections[0].statements[0].text += ' Edited.';
+  assert.deepEqual(cite.check(data, 'Sample fact [demo.model.s1].').sentences[0].problems, ['not-citable']);
+  data.ssot.sections[0].statements[0].text = 'Sample model.';
+  data.flags.set(id, { id, flagged: true });
+  assert.deepEqual(cite.check(data, 'Sample fact [demo.model.s1].').sentences[0].problems, ['not-citable']);
+  data.flags.clear();
+  data.manifest.digest = 'entries';
+  assert.equal(cite.check(data, `Sample fact [${id}].`).ok, true);
+  assert.deepEqual(cite.check(data, 'Sample fact [demo.model.s1].').sentences[0].problems, ['not-citable']);
 });
