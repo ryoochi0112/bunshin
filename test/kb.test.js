@@ -232,3 +232,47 @@ test('loadBound rejects missing KBs and reports the first located parse error', 
     message: 'KB demo has parse errors: entries/model.md:6 Unknown key: extra.',
   });
 });
+
+test('loadBound and twin prompt refuse a parsed KB with a scrubbed verified claim without exposing it', async (t) => {
+  const { home, dir } = fixture(t, fs.readFileSync(path.join(sample, 'entries/model.md'), 'utf8'));
+  store.writeText(dir, 'sources.jsonl', fs.readFileSync(path.join(sample, 'sources.jsonl'), 'utf8'), { synthetic: true });
+  const personaDir = path.join(home, 'sample');
+  const samplePersona = path.resolve(__dirname, '../sample/persona');
+  for (const file of fs.readdirSync(samplePersona)) {
+    store.writeText(personaDir, file, fs.readFileSync(path.join(samplePersona, file), 'utf8'), { synthetic: true });
+  }
+  store.writeJson(personaDir, 'persona.json', { ...store.readJson(personaDir, 'persona.json'), kb: 'demo' });
+  const env = { BUNSHIN_HOME: home };
+  const scrubWord = 'LumaClient';
+  store.writeText(path.dirname(dir), 'demo.scrub.txt', `${scrubWord}\n`, { synthetic: true });
+  const text = fs.readFileSync(path.join(dir, 'entries/model.md'), 'utf8');
+  store.writeText(dir, 'entries/model.md', text.replace('claim: Cloudberry', `claim: ${scrubWord} Cloudberry`), { synthetic: true });
+  assert.deepEqual(kb.load(dir).errors, []);
+  const message = 'KB demo fails kb check: scrub: Entry demo.model.provider field claim contains a scrub-list match.';
+  assert.throws(() => kb.loadBound(personaDir, env), (error) => {
+    assert.equal(error.message, message);
+    assert.ok(!error.message.includes(scrubWord));
+    return true;
+  });
+  let stdout = '';
+  let stderr = '';
+  assert.equal(await main(['twin', 'prompt', '--skill', 'spec-answer', '--persona', personaDir], {
+    env, stdout: { write(value) { stdout += value; } }, stderr: { write(value) { stderr += value; } },
+  }), 1);
+  assert.equal(stdout, '');
+  assert.equal(stderr, `${message}\n`);
+  assert.ok(!stderr.includes(scrubWord));
+});
+
+test('loadBound reports the first kb check finding for a parsed KB', (t) => {
+  const { home, dir } = fixture(t);
+  const personaDir = path.join(home, 'sample');
+  const persona = store.readJson(path.resolve(__dirname, '../sample/persona'), 'persona.json');
+  store.writeJson(personaDir, 'persona.json', { ...persona, kb: 'demo' }, { synthetic: true });
+  store.writeText(dir, 'entries/model.md', valid.replace('S01#E11', 'S99#E11'), { synthetic: true });
+  store.appendJsonl(dir, 'flags.jsonl', { id: 'demo.model.missing', flagged: true }, { synthetic: true });
+  assert.deepEqual(kb.load(dir).errors, []);
+  assert.throws(() => kb.loadBound(personaDir, { BUNSHIN_HOME: home }), {
+    message: 'KB demo fails kb check: source-ref: Entry demo.model.provider sources references unknown source S99.',
+  });
+});

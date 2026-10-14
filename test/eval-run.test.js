@@ -167,7 +167,7 @@ test('drafter firewall, composed system, tool boundaries, stripped judge templat
   }
 });
 
-test('bound eval drafts disable tools and record the digest, citations and gates on every layer', async (t) => {
+test('bound eval drafts use KB rules only for spec-answer and preserve idea-discussion tools and rows', async (t) => {
   const { dir, kbDir, env } = boundFixture(t);
   const expectedKb = { name: 'demo', digest_hash: kb.digest(kb.load(kbDir)).hash };
   const adapters = kbRecording();
@@ -179,15 +179,22 @@ test('bound eval drafts disable tools and record the digest, citations and gates
   assert.deepEqual(drafts.map((row) => row.layer), ['judgment', 'judgment', 'knowledge']);
   for (const [index, row] of drafts.entries()) {
     const input = adapters.calls[index * 4];
-    assert.deepEqual(Object.keys(input).sort(), ['host', 'model', 'prompt', 'system', 'tools']);
-    assert.equal(input.tools, 'none');
-    assert.equal(Object.hasOwn(input, 'allowedTools'), false);
+    const specAnswer = row.skill === 'spec-answer';
+    assert.deepEqual(Object.keys(input).sort(), specAnswer ? ['host', 'model', 'prompt', 'system', 'tools']
+      : ['allowedTools', 'host', 'model', 'prompt', 'system', 'tools']);
+    assert.equal(input.tools, specAnswer ? 'none' : 'notion-read');
+    assert.equal(Object.hasOwn(input, 'allowedTools'), !specAnswer);
+    if (!specAnswer) assert.deepEqual(input.allowedTools, hosts.allowedTools(store.readJson(dir, 'persona.json')));
     assert.equal(input.model, 'requested');
     assert.equal(input.system, twin.composePrompt(dir, twin.skillForLayer(row.layer), { env }));
     assert.equal(input.prompt, judge.questionPrompt(cases[index]));
-    assert.deepEqual(row.kb, expectedKb);
-    assert.deepEqual(row.cited, ['demo.model.provider']);
-    assert.deepEqual(row.gates, passingGates);
+    if (specAnswer) {
+      assert.deepEqual(row.kb, expectedKb);
+      assert.deepEqual(row.cited, ['demo.model.provider']);
+      assert.deepEqual(row.gates, passingGates);
+    } else {
+      for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(row, field), false);
+    }
     const judgeCalls = adapters.calls.slice(index * 4 + 1, index * 4 + 4);
     assert.equal(judgeCalls.length, judge.VOTES);
     for (const call of judgeCalls) {
@@ -214,10 +221,12 @@ test('eval loads the bound KB once and shares it across prompts and digest recor
   const inputs = adapters.calls.filter((input) => !input.outputSchema);
   assert.equal(inputs.length, drafts.length);
   for (const [index, row] of drafts.entries()) {
-    assert.deepEqual(row.kb, expectedKb);
     if (row.layer === 'knowledge') {
+      assert.deepEqual(row.kb, expectedKb);
       assert.match(inputs[index].system, /# Knowledge base digest\n/);
       assert.ok(inputs[index].system.endsWith(`\n${bound.digest.text}`));
+    } else {
+      for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(row, field), false);
     }
   }
   assert.ok(drafts.some((row) => row.layer === 'knowledge'));
@@ -225,6 +234,8 @@ test('eval loads the bound KB once and shares it across prompts and digest recor
 
 test('bound eval gates fail independently from citation and scrub problems', async (t) => {
   const { dir, kbDir, env } = boundFixture(t);
+  store.writeJsonl(dir, 'pairs.jsonl', store.readJsonl(dir, 'pairs.jsonl')
+    .map((pair) => pair.id === 'sample-10' ? { ...pair, layer: 'knowledge' } : pair));
   store.writeText(path.dirname(kbDir), 'demo.scrub.txt', '  ＬｕｍａＣｌｉｅｎｔ  \n', { synthetic: true });
   const cases = [
     ['Unsupported fact.', [], { citation: false }],
@@ -306,6 +317,45 @@ test('bound eval rejects missing KBs, parse errors and unreadable scrub lists be
     assert.equal(adapters.calls.length, 0);
     assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
   }
+});
+
+test('bound eval and CLI reject scrubbed verified claims before host calls or run writes', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  const scrubWord = 'LumaClient';
+  store.writeText(path.dirname(kbDir), 'demo.scrub.txt', `${scrubWord}\n`, { synthetic: true });
+  const text = fs.readFileSync(path.join(kbDir, 'entries/model.md'), 'utf8');
+  store.writeText(kbDir, 'entries/model.md', text.replace('claim: Cloudberry', `claim: ${scrubWord} Cloudberry`), { synthetic: true });
+  const message = 'KB demo fails kb check: scrub: Entry demo.model.provider field claim contains a scrub-list match.';
+  const adapters = kbRecording();
+  await assert.rejects(evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: adapters }), { message });
+  assert.equal(adapters.calls.length, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+  const result = spawnSync(process.execPath, [path.join(root, 'bin', 'bunshin.js'), 'eval', 'run',
+    '--persona', dir, '--drafter', 'fake', '--judge', 'fake'], { cwd: root, env: { ...process.env, ...env }, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, `${message}\n`);
+  assert.ok(!result.stderr.includes(scrubWord));
+  assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+});
+
+test('bound idea-discussion eval drafter matches the unbound call and stores no KB row fields', async (t) => {
+  const { dir, env } = boundFixture(t);
+  const boundAdapters = kbRecording();
+  const boundRun = await evalRun.run(dir, { env, drafter: 'fake:requested', judge: 'fake', limit: 1, hosts: boundAdapters });
+  const [row] = store.readJsonl(dir, `evals/${boundRun.run_id}/drafts.jsonl`);
+  assert.equal(row.skill, 'idea-discussion');
+  assert.equal(boundAdapters.calls[0].tools, 'notion-read');
+  assert.deepEqual(boundAdapters.calls[0].allowedTools, [
+    'mcp__claude_ai_Notion__notion-search', 'mcp__claude_ai_Notion__notion-fetch',
+  ]);
+  for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(row, field), false);
+  assert.equal(store.readJson(dir, `evals/${boundRun.run_id}/run.json`).kb.name, 'demo');
+  const { kb: binding, ...unbound } = store.readJson(dir, 'persona.json');
+  store.writeJson(dir, 'persona.json', unbound);
+  const unboundAdapters = kbRecording();
+  await evalRun.run(dir, { env, drafter: 'fake:requested', judge: 'fake', limit: 1, hosts: unboundAdapters });
+  assert.deepEqual(boundAdapters.calls[0], unboundAdapters.calls[0]);
 });
 
 test('preflight failures make no host calls and create no run directory', async (t) => {

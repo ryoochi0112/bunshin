@@ -282,7 +282,7 @@ test('draft reads no answer, strips frontmatter, shares eval input and allowlist
   }
 });
 
-test('bound shadow drafts disable tools and persist digest, citations and gates on both layers', async (t) => {
+test('bound shadow drafts use KB rules only for spec-answer and preserve idea-discussion tools and rows', async (t) => {
   const { dir, kbDir, env } = boundFixture(t);
   setOwner(dir);
   const expectedKb = { name: 'demo', digest_hash: kb.digest(kb.load(kbDir)).hash };
@@ -292,9 +292,12 @@ test('bound shadow drafts disable tools and persist digest, citations and gates 
     const result = await shadow.draft(dir, id, { env, drafter: 'fake:requested-model', hosts: adapters });
     assert.equal(adapters.calls.length, 1);
     const input = adapters.calls[0];
-    assert.deepEqual(Object.keys(input).sort(), ['host', 'model', 'prompt', 'system', 'tools']);
-    assert.equal(input.tools, 'none');
-    assert.equal(Object.hasOwn(input, 'allowedTools'), false);
+    const specAnswer = layer === 'knowledge';
+    assert.deepEqual(Object.keys(input).sort(), specAnswer ? ['host', 'model', 'prompt', 'system', 'tools']
+      : ['allowedTools', 'host', 'model', 'prompt', 'system', 'tools']);
+    assert.equal(input.tools, specAnswer ? 'none' : 'notion-read');
+    assert.equal(Object.hasOwn(input, 'allowedTools'), !specAnswer);
+    if (!specAnswer) assert.deepEqual(input.allowedTools, hosts.allowedTools(store.readJson(dir, 'persona.json')));
     assert.equal(input.model, 'requested-model');
     assert.equal(input.system, twin.composePrompt(dir, twin.skillForLayer(layer), { env }));
     assert.equal(input.prompt, judge.questionPrompt(shadow.splitThread(thread, owner)));
@@ -302,9 +305,10 @@ test('bound shadow drafts disable tools and persist digest, citations and gates 
     assert.ok(!input.system.includes(canary));
     assert.deepEqual(result, { format_version: 1, id, layer, skill: twin.skillForLayer(layer),
       draft: kbReply, drafter: { host: 'fake', model: 'adapter-returned' }, at: result.at,
-      kb: expectedKb, cited: ['demo.model.provider'], gates: passingGates });
+      ...(specAnswer ? { kb: expectedKb, cited: ['demo.model.provider'], gates: passingGates } : {}) });
+    if (!specAnswer) for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(result, field), false);
     assert.deepEqual(store.readJson(dir, `shadow/${id}/draft.json`), result);
-    assert.ok(shadow.show(dir, id).includes('\ngates: citation=true resolves=true current=true scrub=true\n'));
+    assert.equal(shadow.show(dir, id).includes('\ngates: citation=true resolves=true current=true scrub=true\n'), specAnswer);
   }
 });
 
@@ -379,6 +383,49 @@ test('bound shadow refuses missing KBs, parse errors and unreadable scrub lists 
     assert.equal(adapters.calls.length, 0);
     assert.equal(fs.existsSync(path.join(dir, 'shadow', id, 'draft.json')), false);
   }
+});
+
+test('bound shadow and CLI reject scrubbed verified claims before host calls or draft writes', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  const id = shadow.create(dir, { layer: 'knowledge', question: 'Which model does Cloudberry Lantern use?' });
+  const scrubWord = 'LumaClient';
+  store.writeText(path.dirname(kbDir), 'demo.scrub.txt', `${scrubWord}\n`, { synthetic: true });
+  const text = fs.readFileSync(path.join(kbDir, 'entries/model.md'), 'utf8');
+  store.writeText(kbDir, 'entries/model.md', text.replace('claim: Cloudberry', `claim: ${scrubWord} Cloudberry`), { synthetic: true });
+  const message = 'KB demo fails kb check: scrub: Entry demo.model.provider field claim contains a scrub-list match.';
+  const adapters = kbRecording();
+  await assert.rejects(shadow.draft(dir, id, { env, drafter: 'fake', hosts: adapters }), { message });
+  assert.equal(adapters.calls.length, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'shadow', id, 'draft.json')), false);
+  const result = spawnSync(process.execPath, [path.join(root, 'bin', 'bunshin.js'), 'shadow', 'draft', id,
+    '--persona', dir, '--drafter', 'fake'], { cwd: root, env: { ...process.env, ...env }, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, `${message}\n`);
+  assert.ok(!result.stderr.includes(scrubWord));
+  assert.equal(fs.existsSync(path.join(dir, 'shadow', id, 'draft.json')), false);
+});
+
+test('bound idea-discussion shadow drafter matches the unbound call and stores no KB row fields', async (t) => {
+  const { dir, env } = boundFixture(t);
+  const id = shadow.create(dir, { layer: 'judgment', question: 'Should Cloudberry Lantern try a small pilot?' });
+  const boundAdapters = kbRecording();
+  const result = await shadow.draft(dir, id, { env, drafter: 'fake:requested', hosts: boundAdapters });
+  assert.equal(result.skill, 'idea-discussion');
+  assert.equal(boundAdapters.calls[0].tools, 'notion-read');
+  assert.deepEqual(boundAdapters.calls[0].allowedTools, [
+    'mcp__claude_ai_Notion__notion-search', 'mcp__claude_ai_Notion__notion-fetch',
+  ]);
+  for (const field of ['kb', 'cited', 'gates']) {
+    assert.equal(Object.hasOwn(result, field), false);
+    assert.equal(Object.hasOwn(store.readJson(dir, `shadow/${id}/draft.json`), field), false);
+  }
+  assert.ok(!shadow.show(dir, id).includes('gates:'));
+  const { kb: binding, ...unbound } = store.readJson(dir, 'persona.json');
+  store.writeJson(dir, 'persona.json', unbound);
+  const unboundAdapters = kbRecording();
+  await shadow.draft(dir, id, { env, drafter: 'fake:requested', hosts: unboundAdapters });
+  assert.deepEqual(boundAdapters.calls[0], unboundAdapters.calls[0]);
 });
 
 test('in-process draft defaults to claude through injection; host failures redact text and write no draft', async (t) => {
