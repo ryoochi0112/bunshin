@@ -413,6 +413,14 @@ test('twin skills load the single composed prompt without duplicating behaviour'
   }
 });
 
+test('spec-answer skill switches to no tools when the prompt carries a knowledge base digest', () => {
+  const text = skill('spec-answer');
+  const line = 'If the printed prompt contains `# Knowledge base digest`, use no tools; every fact comes from that digest.';
+  assert.equal(text.split(line).length - 1, 1);
+  assert.ok(text.indexOf(line) > text.indexOf('3. Treat the printed prompt'), 'line follows step 3');
+  assert.ok(fs.readFileSync(path.join(__dirname, '..', 'templates', 'twin', 'spec-answer-kb.md'), 'utf8').trimEnd().endsWith('# Knowledge base digest'));
+});
+
 const shadowRules = [
   ['read-thread only', /For a thread link, read the thread only with the Slack connector's read-thread tool\./],
   ['complete ordered thread', /Construct `\{ permalink, messages: \[\{ author: <Slack user id>, ts: <Slack ts>, text \}\] \}` in memory with every message in the thread in order\./],
