@@ -98,6 +98,8 @@ An SSOT is one reviewed document that the drafter reads and cites instead of the
 - Switch the digest: `node bin/bunshin.js kb ssot enable <kb>`. Run `kb ssot disable <kb>` to go back to entries.
 - Import the coverage labels again with `coverage import`. Enabling changes the digest hash, so `coverage.json` is `coverage_stale` until you do.
 
+In `ssot` mode, citing an entry id fails gate 3 with `not-citable`. If no section remains approved, `kb check` reports `ssot-empty`, binding refuses the knowledge base, and shadow, spec answers and `eval run` stop. Recover with `kb ssot approve` or switch back with `kb ssot disable`.
+
 See [docs/kb-format.md](docs/kb-format.md) for the file formats, section states, `kb check` findings and the one thanks line that needs no citation.
 
 ### Measuring knowledge base answers
@@ -110,7 +112,7 @@ node bin/bunshin.js coverage show [--persona <dir>]
 node bin/bunshin.js eval report --runs <run_a>,<run_b>[,…] [--persona <dir>]
 ```
 
-`coverage import` reads a JSON file with a `cases` array of `{id, coverage, entries}` rows, checks it against the held-out pairs and the bound knowledge base, and writes `coverage.json` in the persona directory. It prints `Imported <n> labels (C <a> · P <b> · N <c> · X <d>) for kb <name>`. A bad row refuses the whole import and names the row. `coverage show` prints the counts and the knowledge base digest, and `stale` when the knowledge base changed after the import.
+`coverage import` reads a JSON file with a `cases` array of `{id, coverage, entries}` rows, checks it against the held-out pairs and the bound knowledge base, and writes `coverage.json` in the persona directory. In both digest modes, `entries` keeps entry ids and accepts only verified, unflagged, unique entries; `kb_digest_hash` records the active mode's digest hash. It prints `Imported <n> labels (C <a> · P <b> · N <c> · X <d>) for kb <name>`. A bad row refuses the whole import and names the row. `coverage show` prints the counts and the knowledge base digest, and `stale` when the knowledge base changed after the import.
 
 `eval report --runs` compares two or more runs that share the same knowledge base, persona version, drafter, judge, rubrics, judge examples, coverage file and cases. It writes `evals/reliability/<a>+<b>+….json` and `.md`, and marks each case `stable_pass`, `stable_fail`, `unstable` or `incomplete`. Runs that differ in any of those inputs are refused.
 

@@ -173,9 +173,11 @@ The digest has one block per approved section, in file order:
   select: 利用AI=灯り
 ```
 
-Only statements of approved sections are citable, so `kb cite`, the reply check, the digest and the support judge all use statement ids. An entry id is no longer citable: `kb cite` reports `not-citable` for it. A section that is not approved is left out of the digest, and its statement ids report `not-citable`. If no section is approved, the digest is empty and the drafter can only abstain.
+Only statements of approved sections are citable, so `kb cite`, the reply check, the digest and the support judge all use statement ids. An entry id is no longer citable: gate 3 reports `not-citable` for it. A section that is not approved is left out of the digest, and its statement ids report `not-citable`.
 
-Enabling or disabling the SSOT, or changing any approved section, changes the digest hash. An imported `coverage.json` then becomes `coverage_stale`, and `kb_gates` reports it until you run `coverage import` again. This is expected.
+With `digest: ssot` and no approved section, `kb check` reports `ssot-empty`, binding refuses the KB, and shadow, spec answers and `eval run` stop with that finding. This also applies when every section becomes stale or blocked. Use `kb ssot status` to inspect the section states, then recover with `kb ssot approve` or switch back to entries with `kb ssot disable`.
+
+Enabling or disabling the SSOT, or changing any approved section, changes the digest hash. An imported `coverage.json` then becomes `coverage_stale`, and `kb_gates` reports it until you run `coverage import` again. This is expected. Coverage labels keep entry ids in both modes: `coverage import` validates them against verified, unflagged, unique entries, while `kb_digest_hash` records the active mode's digest hash.
 
 The support judge keeps the entry lookup in `entries` mode. In `ssot` mode it resolves ids through the citable statements and skips any sentence whose ids are not all citable. It does not send those sentences to the model and does not count them as supported. For example, `eval run --rejudge-from` on a run made in `entries` mode skips its cited sentences after you enable the SSOT, so that run cannot pass on them.
 

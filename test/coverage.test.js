@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { Readable } = require('node:stream');
 const store = require('../lib/store');
 const kb = require('../lib/kb');
 const coverage = require('../lib/coverage');
@@ -50,6 +51,66 @@ async function cli(argv, env) {
   });
   return { code, stdout, stderr };
 }
+
+async function kbCli(argv, env, text) {
+  let stderr = '';
+  const code = await main(['kb', ...argv], { env, probe: () => 'private',
+    stdin: Readable.from(text === undefined ? [] : [text]),
+    stdout: { write() {} }, stderr: { write(value) { stderr += value; } },
+  });
+  assert.equal(code, 0, stderr);
+}
+
+async function approveSsot(env) {
+  await kbCli(['ssot', 'draft', 'demo'], env,
+    '## model\ntitle: Model\n\n### demo.model.s1\n'
+    + 'text: Cloudberry Lantern は架空のモデル「灯り」を利用する。\nbacks: demo.model.provider\n');
+  await kbCli(['ssot', 'approve', 'demo', 'model'], env);
+}
+
+test('coverage entry ids import in both modes while pinning the active digest', async (t) => {
+  const { dir, env, file } = fixture(t);
+  input(file);
+  const entriesImport = await cli(['import', file], env);
+  assert.equal(entriesImport.code, 0, entriesImport.stderr);
+  const original = coverage.read(dir);
+  await approveSsot(env);
+  await kbCli(['ssot', 'enable', 'demo'], env);
+  assert.match((await cli(['show'], env)).stdout, /stale/);
+  const bound = kb.loadBound(dir, env);
+  assert.deepEqual(bound.digest.ids, ['demo.model.s1']);
+  assert.notEqual(bound.digest.hash, original.kb_digest_hash);
+  const imported = await cli(['import', file], env);
+  assert.deepEqual(imported, entriesImport);
+  const value = coverage.read(dir);
+  assert.equal(value.kb_digest_hash, bound.digest.hash);
+  assert.deepEqual(value.cases, original.cases);
+  assert.doesNotMatch((await cli(['show'], env)).stdout, /stale/);
+});
+
+test('SSOT coverage rejects unverified, flagged and statement ids with entries-mode refusals', async (t) => {
+  const { dir, env, file } = fixture(t);
+  await approveSsot(env);
+  // Flag a separate verified entry so the approved section remains usable.
+  await kbCli(['approve', 'demo', 'demo.model.region'], env);
+  await kbCli(['flag', 'demo', 'demo.model.region', '--reason', 'Synthetic flag'], env);
+  const refusals = new Map();
+  for (const mode of ['entries', 'ssot']) {
+    if (mode === 'ssot') await kbCli(['ssot', 'enable', 'demo'], env);
+    for (const id of ['demo.model.region', 'demo.model.retention', 'demo.model.legacy',
+      'unknown.entry.id', 'demo.model.s1']) {
+      input(file, [{ id: 'sample-10', coverage: 'C', entries: [id] }]);
+      const before = snapshot(dir);
+      const result = await cli(['import', file], env);
+      assert.equal(result.code, 1, `${mode}: ${id}`);
+      assert.equal(result.stderr,
+        'coverage import: row 1: Entry id is not verified and unflagged in the bound KB.\n');
+      assert.deepEqual(snapshot(dir), before);
+      if (mode === 'entries') refusals.set(id, result);
+      else assert.deepEqual(result, refusals.get(id));
+    }
+  }
+});
 
 test('coverage import pins the bound digest, ignores extra keys and show reports counts', async (t) => {
   const { dir, env, file } = fixture(t);

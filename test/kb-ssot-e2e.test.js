@@ -51,7 +51,8 @@ test('sample SSOT draft, approval and enable flow reaches eval gates and invalid
 
   const labelsFile = path.join(home, 'sample-coverage.json');
   fs.writeFileSync(labelsFile, JSON.stringify({ cases: [
-    { id: 'sample-13', coverage: 'C' }, { id: 'sample-12', coverage: 'P' },
+    { id: 'sample-13', coverage: 'C', entries: ['demo.model.provider'] },
+    { id: 'sample-12', coverage: 'P' },
   ] }));
   await invoke(coverageCommand, ['import', labelsFile, '--persona', dir], env);
   const importedCoverage = store.readJson(dir, 'coverage.json');
@@ -112,6 +113,7 @@ test('sample SSOT draft, approval and enable flow reaches eval gates and invalid
   assert.deepEqual(store.readJson(dir, 'coverage.json'), importedCoverage);
   await invoke(coverageCommand, ['import', labelsFile, '--persona', dir], env);
   assert.equal(store.readJson(dir, 'coverage.json').kb_digest_hash, digest.hash);
+  assert.deepEqual(store.readJson(dir, 'coverage.json').cases['sample-13'].entries, ['demo.model.provider']);
   const output = await invoke(evalCommand, reportArgs, env);
   assert.match(output, /kb gates: pass/);
   const report = store.readJson(dir, `evals/${run.run_id}/report.json`);
