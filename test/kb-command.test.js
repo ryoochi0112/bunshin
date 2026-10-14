@@ -16,6 +16,178 @@ const command = require('../lib/commands/kb');
 const sample = path.resolve(__dirname, '../sample/kb/demo');
 const cli = path.resolve(__dirname, '../bin/bunshin.js');
 
+function ssotBlock(section, text = 'Cloudberry Lantern uses a fictional model.', backs = 'demo.model.provider') {
+  return `## ${section}\ntitle: Sample ${section}\n\n### demo.${section}.s1\ntext: ${text}\nbacks: ${backs}\nselect: model=Lantern\n`;
+}
+
+test('SSOT CLI drafts, approves, shows, enables and disables without changing entries', (t) => {
+  const { dir, env, run } = initialized(t);
+  const original = readEntry(dir);
+  const first = ssotBlock('model');
+  const second = ssotBlock('details');
+  const drafted = ingest(env, ['ssot', 'draft', 'demo'], first + '\n' + second);
+  assert.equal(drafted.status, 0, drafted.stderr);
+  assert.equal(fs.readFileSync(path.join(dir, 'ssot.md'), 'utf8'), '# demo SSOT\n\n' + first + '\n' + second);
+  assert.deepEqual(run(['ssot', 'status', 'demo']), { code: 0,
+    stdout: 'model  draft  1 statements\ndetails  draft  1 statements\nuncovered 0\n', stderr: '' });
+  assert.equal(run(['ssot', 'approve', 'demo', 'model']).code, 0);
+  const ssot = require('../lib/kb-ssot');
+  const data = kb.load(dir);
+  const row = store.readJsonl(dir, 'ssot-approvals.jsonl')[0];
+  assert.deepEqual(Object.keys(row).sort(), ['approved_at', 'backing_hash', 'id', 'text_hash']);
+  assert.equal(row.id, 'model');
+  assert.equal(new Date(row.approved_at).toISOString(), row.approved_at);
+  assert.equal(row.text_hash, ssot.textHash(data.ssot.sections[0]));
+  assert.equal(row.backing_hash, ssot.backingHash(data.ssot.sections[0], data));
+  assert.deepEqual(run(['ssot', 'show', 'demo', 'model']), { code: 0, stdout: first + '\nstate: approved\n', stderr: '' });
+  assert.match(run(['ssot', 'status', 'demo']).stdout, /^model  approved  1 statements/m);
+  assert.equal(run(['ssot', 'enable', 'demo']).code, 0);
+  assert.equal(store.readJson(dir, 'kb.json').digest, 'ssot');
+  assert.equal(run(['ssot', 'disable', 'demo']).code, 0);
+  assert.equal(store.readJson(dir, 'kb.json').digest, 'entries');
+  assert.equal(readEntry(dir), original);
+
+  const changed = ssotBlock('model', 'Cloudberry Lantern uses the fictional Lantern model.');
+  assert.equal(ingest(env, ['ssot', 'draft', 'demo'], changed + '\n' + ssotBlock('extra')).status, 0);
+  assert.equal(fs.readFileSync(path.join(dir, 'ssot.md'), 'utf8'), '# demo SSOT\n\n' + changed + '\n' + second + '\n' + ssotBlock('extra'));
+  assert.match(run(['ssot', 'status', 'demo']).stdout, /^model  changed  1 statements/m);
+  assert.equal(run(['ssot', 'approve', 'demo', 'model']).code, 0);
+  assert.equal(store.readJsonl(dir, 'ssot-approvals.jsonl').length, 2);
+  writeEntry(dir, readEntry(dir).replace('claim: Cloudberry Lantern', 'claim: Sample Cloudberry Lantern'));
+  assert.match(run(['ssot', 'status', 'demo']).stdout, /^model  stale  1 statements/m);
+  assert.equal(run(['flag', 'demo', 'demo.model.provider', '--reason', 'Sample review']).code, 0);
+  assert.match(run(['ssot', 'status', 'demo']).stdout, /^model  blocked  1 statements/m);
+});
+
+test('SSOT uncovered includes only verified unflagged entries backed by no statement', (t) => {
+  const { env, run } = initialized(t);
+  assert.equal(run(['ssot', 'status', 'demo']).stdout, 'uncovered 1\ndemo.model.provider\n');
+  assert.equal(run(['approve', 'demo', 'demo.model.region']).code, 0);
+  assert.equal(run(['approve', 'demo', 'demo.model.retention', '--resolve']).code, 0);
+  assert.equal(run(['flag', 'demo', 'demo.model.retention', '--reason', 'Sample review']).code, 0);
+  assert.equal(ingest(env, ['ssot', 'draft', 'demo'], ssotBlock('model')).status, 0);
+  assert.equal(run(['ssot', 'status', 'demo']).stdout, 'model  draft  1 statements\nuncovered 1\ndemo.model.region\n');
+});
+
+for (const [label, input, setup] of [
+  ['bad block', ssotBlock('details').replace('text:', 'unknown:')],
+  ['unknown backing', ssotBlock('details', undefined, 'demo.model.missing')],
+  ['draft backing', ssotBlock('details', undefined, 'demo.model.region')],
+  ['conflict backing', ssotBlock('details', undefined, 'demo.model.retention')],
+  ['retired backing', ssotBlock('details', undefined, 'demo.model.legacy')],
+  ['flagged backing', ssotBlock('details'), (f) => f.run(['flag', 'demo', 'demo.model.provider', '--reason', 'Sample review'])],
+  ['email', ssotBlock('details', 'sample.person@example.invalid')],
+  ['phone', ssotBlock('details', '０９０－１２３４－５６７８')],
+  ['scrub text', ssotBlock('details', 'ＬＵＭＡＣＬＩＥＮＴ')],
+  ['scrub title', ssotBlock('details').replace('Sample details', 'LumaClient')],
+  ['email select', ssotBlock('details').replace('model=Lantern', 'model=sample.person@example.invalid')],
+  ['scrub select key', ssotBlock('details').replace('model=Lantern', 'LumaClient=Lantern')],
+  ['scrub select value', ssotBlock('details').replace('model=Lantern', 'model=LumaClient')],
+]) {
+  test(`SSOT draft refuses ${label} before writing the whole batch`, (t) => {
+    const f = initialized(t);
+    store.writeText(path.dirname(f.dir), 'demo.scrub.txt', 'LumaClient\n', { synthetic: true });
+    if (setup) setup(f);
+    const before = directoryHash(f.dir);
+    const result = ingest(f.env, ['ssot', 'draft', 'demo'], ssotBlock('model') + '\n' + input);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /details/);
+    for (const secret of ['sample.person@example.invalid', '０９０－１２３４－５６７８', 'LumaClient', 'ＬＵＭＡＣＬＩＥＮＴ']) {
+      assert.ok(!result.stderr.includes(secret));
+    }
+    assert.equal(directoryHash(f.dir), before);
+  });
+}
+
+test('SSOT refusals and usage errors leave the KB unchanged', (t) => {
+  const { dir, env, run } = initialized(t);
+  const before = directoryHash(dir);
+  for (const action of ['approve', 'show']) assert.equal(run(['ssot', action, 'demo', 'missing']).code, 1);
+  assert.deepEqual(run(['ssot', 'enable', 'demo']), { code: 1, stdout: '', stderr: 'No approved SSOT section.\n' });
+  for (const text of ['', '# document title\n', ssotBlock('model') + '\n' + ssotBlock('model')]) {
+    assert.equal(ingest(env, ['ssot', 'draft', 'demo'], text).status, 1);
+    assert.equal(directoryHash(dir), before);
+  }
+  for (const args of [['ssot'], ['ssot', 'other', 'demo'], ['ssot', 'approve', 'demo'],
+    ['ssot', 'show', 'demo', '../bad'], ['ssot', 'draft', 'demo', 'extra'],
+    ['ssot', 'status', 'demo', '--other'], ['ssot', 'enable', '../demo']]) {
+    assert.equal(run(args).code, 2);
+  }
+  assert.equal(directoryHash(dir), before);
+});
+
+test('SSOT approve refuses unsafe hand-edited text, bad backs and parse errors without writes', (t) => {
+  const { dir, run } = initialized(t);
+  store.writeText(path.dirname(dir), 'demo.scrub.txt', 'LumaClient\n', { synthetic: true });
+  for (const text of [ssotBlock('model', 'sample.person@example.invalid'), ssotBlock('model', 'LumaClient'),
+    ssotBlock('model').replace('Sample model', 'LumaClient'), ssotBlock('model').replace('model=Lantern', 'model=LumaClient'),
+    ssotBlock('model', undefined, 'demo.model.region'), ssotBlock('model', undefined, 'demo.model.missing'),
+    ssotBlock('model').replace('text:', 'unknown:')]) {
+    store.writeText(dir, 'ssot.md', '# demo SSOT\n\n' + text, { synthetic: true });
+    const before = directoryHash(dir);
+    const result = run(['ssot', 'approve', 'demo', 'model']);
+    assert.equal(result.code, 1);
+    assert.ok(!result.stderr.includes('LumaClient'));
+    assert.ok(!result.stderr.includes('sample.person@example.invalid'));
+    assert.equal(directoryHash(dir), before);
+  }
+});
+
+test('SSOT draft accepts stream stdin and writer returns added and replaced sections', async (t) => {
+  const { dir, env } = initialized(t);
+  let stdout = '';
+  let stderr = '';
+  const first = ssotBlock('model');
+  const code = await command.run(['ssot', 'draft', 'demo'], { env, probe: () => 'private',
+    stdin: Readable.from([first.slice(0, 20), first.slice(20)]),
+    stdout: { write(text) { stdout += text; } }, stderr: { write(text) { stderr += text; } } });
+  assert.equal(code, 0, stderr);
+  assert.ok(stdout.includes('model'));
+  const writer = require('../lib/kb-ssot-write');
+  assert.deepEqual(writer.draft(dir, ssotBlock('model') + '\n' + ssotBlock('details')), { added: ['details'], replaced: ['model'] });
+});
+
+test('SSOT show prints the final section, including a single section without a final newline', (t) => {
+  const { dir, run } = initialized(t);
+  const first = ssotBlock('model');
+  const last = ssotBlock('details').trimEnd();
+  store.writeText(dir, 'ssot.md', '# Sample title\n\n' + first + '\n' + last, { synthetic: true });
+  assert.deepEqual(run(['ssot', 'show', 'demo', 'details']), { code: 0, stdout: last + '\nstate: draft\n', stderr: '' });
+  store.writeText(dir, 'ssot.md', '# Sample title\n\n' + last, { synthetic: true });
+  assert.deepEqual(run(['ssot', 'show', 'demo', 'details']), { code: 0, stdout: last + '\nstate: draft\n', stderr: '' });
+});
+
+test('SSOT enable and approve refusals preserve an existing draft or blocked section', (t) => {
+  const { dir, env, run } = initialized(t);
+  assert.equal(ingest(env, ['ssot', 'draft', 'demo'], ssotBlock('model')).status, 0);
+  let before = directoryHash(dir);
+  assert.deepEqual(run(['ssot', 'enable', 'demo']), { code: 1, stdout: '', stderr: 'No approved SSOT section.\n' });
+  assert.equal(directoryHash(dir), before);
+  assert.equal(run(['ssot', 'approve', 'demo', 'model']).code, 0);
+  assert.equal(run(['flag', 'demo', 'demo.model.provider', '--reason', 'Sample review']).code, 0);
+  before = directoryHash(dir);
+  assert.equal(run(['ssot', 'approve', 'demo', 'model']).code, 1);
+  assert.equal(run(['ssot', 'enable', 'demo']).code, 1);
+  assert.equal(ingest(env, ['ssot', 'draft', 'demo'], ssotBlock('model', 'Sample replacement.')).status, 1);
+  assert.equal(directoryHash(dir), before);
+});
+
+test('SSOT draft refuses reserved entry slugs and redacts private section names', (t) => {
+  const { dir, env } = initialized(t);
+  store.writeText(path.dirname(dir), 'demo.scrub.txt', 'lumaclient\n', { synthetic: true });
+  let before = directoryHash(dir);
+  const result = ingest(env, ['ssot', 'draft', 'demo'], ssotBlock('lumaclient'));
+  assert.equal(result.status, 1);
+  assert.ok(!result.stderr.includes('lumaclient'));
+  assert.equal(result.stdout, '');
+  assert.equal(directoryHash(dir), before);
+  writeEntry(dir, readEntry(dir).replace('demo.model.provider', 'demo.model.s1'));
+  before = directoryHash(dir);
+  assert.equal(ingest(env, ['ssot', 'draft', 'demo'], ssotBlock('model', undefined, 'demo.model.s1')).status, 1);
+  assert.equal(directoryHash(dir), before);
+});
+
 function fixture(t) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bunshin-kb-command-')));
   t.after(() => { store._resetGuardCache(); fs.rmSync(home, { recursive: true, force: true }); });
