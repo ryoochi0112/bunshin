@@ -427,3 +427,55 @@ test('draft prints post-write checker findings and exits 1 when the KB needs rev
   assert.ok(!result.stdout.includes('demo.person@example.invalid'));
   assert.equal(kb.load(dir).entries.find((entry) => entry.id === draftRow.id).status, 'draft');
 });
+
+for (const [label, ending] of [['CR', '\r'], ['LF', '\n'], ['NUL', '\0'], ['U+2028', '\u2028'], ['U+2029', '\u2029']]) {
+  for (const [field, args, first, bad] of [
+    ['note', ['draft', 'demo'], { ...draftRow, id: 'demo.new.first' }, { ...draftRow, note: `a${ending}b` }],
+    ['claim', ['draft', 'demo'], { ...draftRow, id: 'demo.new.first' }, { ...draftRow, claim: `a${ending}b` }],
+    ['select value', ['draft', 'demo'], { ...draftRow, id: 'demo.new.first' }, { ...draftRow, select: { model: `a${ending}b` } }],
+    ['source label', ['sources', 'add', 'demo'], { ...sourceRow, ref: 'https://example.invalid/demo/first' }, { ...sourceRow, label: `a${ending}b` }],
+  ]) {
+    test(`CLI refuses ${label} in ${field} with no file changes for the whole batch`, (t) => {
+      const { dir, env } = initialized(t);
+      const before = directoryHash(dir);
+      const result = ingest(env, args, [first, bad].map((row) => JSON.stringify(row)).join('\n'));
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /^Row 2:/);
+      assert.equal(directoryHash(dir), before);
+      assert.deepEqual(kb.load(dir).errors, []);
+    });
+  }
+}
+
+test('CLI refuses a prepared parse error before writing entries or answers', (t) => {
+  const { dir, env } = initialized(t);
+  const before = directoryHash(dir);
+  const answer = { row_id: 14, cell: 'E14', question: 'Which fictional model?', answer: 'Lantern', answer_type: 'text' };
+  const rows = [
+    { ...draftRow, id: 'demo.new.first', answers: [answer] },
+    { ...draftRow, claim: ' # hidden claim' },
+  ];
+  const result = ingest(env, ['draft', 'demo'], rows.map((row) => JSON.stringify(row)).join('\n'));
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /^Row 2: entries\/model\.md:\d+ Missing claim\.\n$/);
+  assert.equal(directoryHash(dir), before);
+  assert.deepEqual(kb.load(dir).errors, []);
+});
+
+for (const [field, value, id] of [
+  ['ref', 'https://example.invalid/demo/model', 'S02'],
+  ['file_sha256', '0'.repeat(64), 'S01'],
+]) {
+  test(`CLI duplicate ${field} names ${id} and writes nothing`, (t) => {
+    const { dir, env } = initialized(t);
+    const before = directoryHash(dir);
+    const rows = [{ ...sourceRow, ref: 'https://example.invalid/demo/first' }, { ...sourceRow, [field]: value }];
+    const result = ingest(env, ['sources', 'add', 'demo'], rows.map((row) => JSON.stringify(row)).join('\n'));
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, `Row 2: Source ${field} already exists as ${id}.\n`);
+    assert.equal(directoryHash(dir), before);
+  });
+}

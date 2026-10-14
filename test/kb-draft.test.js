@@ -276,3 +276,88 @@ test('draft privacy scan shares kb-check source/date masks and phone patterns', 
   }
   assert.equal(directoryHash(dir), before);
 });
+
+for (const [label, ending] of [['CR', '\r'], ['LF', '\n'], ['NUL', '\0'], ['U+2028', '\u2028'], ['U+2029', '\u2029']]) {
+  test(`addSources refuses ${label} in every field before writing the batch`, (t) => {
+    const { dir } = fixture(t);
+    const before = directoryHash(dir);
+    for (const [field, value] of [
+      ['id', `S04${ending}`], ['kind', `slack${ending}`],
+      ['label', `Sample${ending}source`], ['ref', `https://example.invalid/demo/${ending}source`],
+      ['answered_at', `2026-10-13${ending}`], ['file_sha256', `${'1'.repeat(64)}${ending}`],
+      ['superseded_by', `S02${ending}`],
+    ]) {
+      assert.throws(() => draft.addSources(dir, [
+        { ...source, ref: 'https://example.invalid/demo/first' }, { ...source, [field]: value },
+      ]), { message: /^Row 2:/ }, field);
+      assert.equal(directoryHash(dir), before, field);
+    }
+  });
+
+  test(`addEntries refuses ${label} in every field before writing entries or answers`, (t) => {
+    const { dir } = fixture(t);
+    const answer = { row_id: 'sample-14', cell: 'E14', question: 'Which fictional model?', answer: 'Lantern', answer_type: 'text' };
+    const before = directoryHash(dir);
+    for (const bad of [
+      { ...entry, id: `${entry.id}${ending}` },
+      { ...entry, claim: `Sample${ending}claim` },
+      { ...entry, sources: [`S01#E14${ending}`] },
+      { ...entry, select: { [`model${ending}`]: 'Lantern' } },
+      { ...entry, select: { model: `Lantern${ending}model` } },
+      { ...entry, note: `a${ending}b` },
+      ...Object.keys(answer).map((field) => ({ ...entry, answers: [{ ...answer, [field]: `sample${ending}value` }] })),
+    ]) {
+      assert.throws(() => draft.addEntries(dir, [
+        { ...entry, id: 'demo.new.first', answers: [answer] }, bad,
+      ]), { message: /^Row 2:/ });
+      assert.equal(directoryHash(dir), before);
+    }
+  });
+}
+
+for (const id of ['demo.model.next', 'demo.new.second']) {
+  test(`addEntries reparses the prepared file for ${id} before writing any files`, (t) => {
+    const { dir } = fixture(t);
+    const before = directoryHash(dir);
+    const answer = { row_id: 14, cell: 'E14', question: 'Which fictional model?', answer: 'Lantern', answer_type: 'text' };
+    // The writer's prefix turns this single-line value into an inline comment.
+    const bad = { ...entry, id, claim: ' # hidden claim' };
+    assert.throws(() => draft.addEntries(dir, [
+      { ...entry, id: 'demo.new.first', answers: [answer] }, bad,
+    ]), { message: /^Row 2: entries\/\w+\.md:\d+ Missing claim\.$/ });
+    assert.equal(directoryHash(dir), before);
+    assert.deepEqual(kb.load(dir).errors, []);
+  });
+}
+
+for (const [field, value, id] of [
+  ['ref', 'https://example.invalid/demo/model', 'S02'],
+  ['file_sha256', '0'.repeat(64), 'S01'],
+]) {
+  test(`addSources names existing ${id} for duplicate ${field}`, (t) => {
+    const { dir } = fixture(t);
+    const before = directoryHash(dir);
+    assert.throws(() => draft.addSources(dir, [
+      { ...source, ref: 'https://example.invalid/demo/first' }, { ...source, [field]: value },
+    ]), { message: `Row 2: Source ${field} already exists as ${id}.` });
+    assert.equal(directoryHash(dir), before);
+  });
+}
+
+test('addSources names the assigned batch id and compares SHA-256 without case', (t) => {
+  const { dir } = fixture(t);
+  const first = { ...source, file_sha256: 'ab'.repeat(32) };
+  const before = directoryHash(dir);
+  for (const [field, value] of [['ref', first.ref], ['file_sha256', first.file_sha256.toUpperCase()]]) {
+    assert.throws(() => draft.addSources(dir, [first, {
+      ...source, ref: 'https://example.invalid/demo/second', [field]: value,
+    }]), { message: `Row 2: Source ${field} already exists as S03.` });
+    assert.equal(directoryHash(dir), before);
+  }
+  draft.addSources(dir, [{ ...first, id: 'S07' }]);
+  const after = directoryHash(dir);
+  assert.throws(() => draft.addSources(dir, [{
+    ...source, ref: 'https://example.invalid/demo/second', file_sha256: first.file_sha256.toUpperCase(),
+  }]), { message: 'Row 1: Source file_sha256 already exists as S07.' });
+  assert.equal(directoryHash(dir), after);
+});

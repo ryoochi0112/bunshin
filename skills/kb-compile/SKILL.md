@@ -13,6 +13,7 @@ For engine commands, the plugin root is `${CLAUDE_PLUGIN_ROOT}`, or two director
 Never run `kb approve`; the owner approves.
 Never write a KB file yourself; the CLI owns every write.
 Never post or send anything.
+The following error rule has one exception: the existing-source refusal in step 3.
 On any non-zero exit, show the CLI's error and stop.
 
 1. Use `$ARGUMENTS` as the KB name followed by one source; ask for either if missing. Run `kb list <name>` first and reuse existing topics and ids; never invent a second id for a fact that already has one.
@@ -31,7 +32,7 @@ On any non-zero exit, show the CLI's error and stop.
    BUNSHIN_KB_SOURCE
    ```
 
-   Construct one row with `kind`, `label`, `ref` and `answered_at` (`YYYY-MM-DD`); omit `id` so the CLI assigns it. Use `notion` or `slack` for connector sources and `sheet` for pasted text. Use the actual source reference, or ask for a client-neutral reference and date for pasted text when missing. Capture the printed `S<nn>` id for draft references and freshness checks. If the CLI reports an already registered source, stop and ask for its existing source id; never change the reference to bypass deduplication.
+   Construct one row with `kind`, `label`, `ref` and `answered_at` (`YYYY-MM-DD`); omit `id` so the CLI assigns it. Use `notion` or `slack` for connector sources and `sheet` for pasted text. Use the actual source reference, or ask for a client-neutral reference and date for pasted text when missing. Capture the printed `S<nn>` id for draft references and freshness checks. If `kb sources add` refuses with `already exists as S<nn>`, reuse that id for `kb draft` and `kb stale` and continue. Never change the reference to bypass deduplication.
 4. Write one JSONL row per client-neutral fact and pipe it into `kb draft` through a quoted heredoc; never create a temp file or staging file anywhere. Skip client-specific commitments and statements about named people and list each skipped fact with its reason.
 
    ```sh
