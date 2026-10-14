@@ -7,10 +7,12 @@ const path = require('node:path');
 const hosts = require('../lib/hosts');
 const twin = require('../lib/twin');
 const checks = require('../lib/twin-check');
+const kb = require('../lib/kb');
+const store = require('../lib/store');
 
 const root = path.resolve(__dirname, '..');
 const usage = 'Usage: node scripts/acceptance.js --host claude|codex [--timeout <seconds>] [--model <model>]\n';
-const names = ['spec no-source', 'idea priority', 'language', 'eval provenance', 'export package', 'drafter isolation'];
+const names = ['spec no-source', 'idea priority', 'language', 'eval provenance', 'export package', 'drafter isolation', 'kb cite'];
 const specQuestion = 'What is the exact maximum number of lunar telemetry widgets supported by Tidepool?';
 const idea = 'Should Tidepool replace every navigation workflow at once without a pilot or a rollback plan?';
 
@@ -408,6 +410,25 @@ async function main(argv, {
           });
           checkIsolation(raw, allowlist);
         }
+        if (index === 6) {
+          await cli(['kb', 'init', 'demo', '--sample']);
+          store.writeJson(dir, 'persona.json', { ...persona, kb: 'demo' });
+          const { text: system } = twin.compose(dir, 'spec-answer', { env });
+          const kbData = kb.load(kb.resolve({ name: 'demo', env }));
+          for (const [question, covered] of [
+            ['Cloudberry Lantern はどのモデルを利用しますか？', true],
+            ['What is the weather on the moon today?', false],
+          ]) {
+            const { text } = await runHost({ system, prompt: question, tools: 'none',
+              model: options.model, timeoutMs: remaining() });
+            const result = checks.checkSpecReply(text, { kbData });
+            if (!result.ok) throw new Error(`invalid KB reply: ${result.problems.join(' ')}`);
+            if (covered && !result.cited.includes('demo.model.provider')) {
+              throw new Error('expected citation demo.model.provider');
+            }
+            if (!covered && !result.abstain) throw new Error('expected KB abstention');
+          }
+        }
         passed++;
         io.stdout.write(`PASS ${index + 1} ${name}\n`);
       } catch (error) {
@@ -418,8 +439,8 @@ async function main(argv, {
   } finally {
     if (home) fs.rmSync(home, { recursive: true, force: true });
   }
-  io.stdout.write(`acceptance: ${passed}/6 passed\n`);
-  return passed === 6 ? 0 : 1;
+  io.stdout.write(`acceptance: ${passed}/${names.length} passed\n`);
+  return passed === names.length ? 0 : 1;
 }
 
 module.exports = { main, parseArgs, requireSpec, runProcess, checkIsolation };

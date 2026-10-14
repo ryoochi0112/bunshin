@@ -75,6 +75,20 @@ function snapshot(dir) {
   ]));
 }
 
+test('persona manifest accepts an absent or valid KB binding and rejects other values', (t) => {
+  const dir = fixture(t);
+  const manifest = store.readJson(dir, 'persona.json');
+  assert.deepEqual(check.readManifest(dir), manifest);
+  for (const kb of ['demo', '0-demo', 'a']) {
+    store.writeJson(dir, 'persona.json', { ...manifest, kb });
+    assert.equal(check.readManifest(dir).kb, kb);
+  }
+  for (const kb of [42, 'Demo', null, false, {}, [], '', '../demo', 'demo_name', 'a\n']) {
+    store.writeJson(dir, 'persona.json', { ...manifest, kb });
+    assert.throws(() => check.readManifest(dir), { message: 'Invalid persona manifest.' });
+  }
+});
+
 test('normalization applies NFKC, lower-case and whitespace collapse', () => {
   assert.ok(leak.normalize('ＡＢＣ\t\nｶﾞｯﾂ　架空の回答') === 'abc ガッツ 架空の回答', 'Normalization must handle width, case and whitespace.');
   assert.ok(leak.normalize('  Fictional\r\n text  ') === ' fictional text ', 'Whitespace runs must become one space.');

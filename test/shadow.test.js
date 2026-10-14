@@ -13,6 +13,7 @@ const store = require('../lib/store');
 const twin = require('../lib/twin');
 const judge = require('../lib/judge');
 const hosts = require('../lib/hosts');
+const kb = require('../lib/kb');
 
 const root = path.join(__dirname, '..');
 const owner = 'U_SYNTHETIC_OWNER';
@@ -30,6 +31,28 @@ function fixture(t) {
   fs.cpSync(path.join(root, 'sample', 'persona'), dir, { recursive: true });
   t.after(() => { fs.rmSync(home, { recursive: true, force: true }); store._resetGuardCache(); });
   return { home, dir };
+}
+
+function boundFixture(t) {
+  const { home, dir } = fixture(t);
+  store.writeJson(dir, 'persona.json', { ...store.readJson(dir, 'persona.json'), kb: 'demo' });
+  const env = { BUNSHIN_HOME: home };
+  const kbDir = kb.resolve({ name: 'demo', env });
+  for (const file of ['kb.json', 'sources.jsonl', 'entries/model.md']) {
+    store.writeText(kbDir, file, fs.readFileSync(path.join(root, 'sample', 'kb', 'demo', file), 'utf8'), { synthetic: true });
+  }
+  return { home, dir, kbDir, env };
+}
+
+const passingGates = { citation: true, resolves: true, current: true, scrub: true };
+const kbReply = 'Cloudberry Lantern uses the fictional model Akari. [demo.model.provider]';
+
+function kbRecording(text = kbReply) {
+  const calls = [];
+  return { calls, get(host) { return { async run(input) {
+    calls.push({ host, ...input });
+    return { text, model: 'adapter-returned' };
+  } }; } };
 }
 
 function setOwner(dir, value) {
@@ -257,6 +280,152 @@ test('draft reads no answer, strips frontmatter, shares eval input and allowlist
     await shadow.draft(dir, id, { drafter: 'fake', hosts: adapters });
     assert.equal(store.readJson(dir, `shadow/${id}/draft.json`).draft, 'Synthetic draft 2.');
   }
+});
+
+test('bound shadow drafts use KB rules only for spec-answer and preserve idea-discussion tools and rows', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  setOwner(dir);
+  const expectedKb = { name: 'demo', digest_hash: kb.digest(kb.load(kbDir)).hash };
+  for (const layer of ['knowledge', 'judgment']) {
+    const id = shadow.create(dir, { layer, thread });
+    const adapters = kbRecording();
+    const result = await shadow.draft(dir, id, { env, drafter: 'fake:requested-model', hosts: adapters });
+    assert.equal(adapters.calls.length, 1);
+    const input = adapters.calls[0];
+    const specAnswer = layer === 'knowledge';
+    assert.deepEqual(Object.keys(input).sort(), specAnswer ? ['host', 'model', 'prompt', 'system', 'tools']
+      : ['allowedTools', 'host', 'model', 'prompt', 'system', 'tools']);
+    assert.equal(input.tools, specAnswer ? 'none' : 'notion-read');
+    assert.equal(Object.hasOwn(input, 'allowedTools'), !specAnswer);
+    if (!specAnswer) assert.deepEqual(input.allowedTools, hosts.allowedTools(store.readJson(dir, 'persona.json')));
+    assert.equal(input.model, 'requested-model');
+    assert.equal(input.system, twin.composePrompt(dir, twin.skillForLayer(layer), { env }));
+    assert.equal(input.prompt, judge.questionPrompt(shadow.splitThread(thread, owner)));
+    assert.ok(!input.prompt.includes(canary));
+    assert.ok(!input.system.includes(canary));
+    assert.deepEqual(result, { format_version: 1, id, layer, skill: twin.skillForLayer(layer),
+      draft: kbReply, drafter: { host: 'fake', model: 'adapter-returned' }, at: result.at,
+      ...(specAnswer ? { kb: expectedKb, cited: ['demo.model.provider'], gates: passingGates } : {}) });
+    if (!specAnswer) for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(result, field), false);
+    assert.deepEqual(store.readJson(dir, `shadow/${id}/draft.json`), result);
+    assert.equal(shadow.show(dir, id).includes('\ngates: citation=true resolves=true current=true scrub=true\n'), specAnswer);
+  }
+});
+
+test('shadow loads the bound KB once for the prompt and digest record', async (t) => {
+  const { dir, env } = boundFixture(t);
+  const id = shadow.create(dir, { layer: 'knowledge', question: 'Which model does Cloudberry Lantern use?' });
+  const adapters = kbRecording();
+  const load = t.mock.method(kb, 'loadBound');
+  const result = await shadow.draft(dir, id, { env, drafter: 'fake', hosts: adapters });
+  assert.equal(load.mock.calls.length, 1);
+  assert.deepEqual(load.mock.calls[0].arguments, [dir, env]);
+  const bound = load.mock.calls[0].result;
+  assert.equal(adapters.calls.length, 1);
+  assert.match(adapters.calls[0].system, /# Knowledge base digest\n/);
+  assert.ok(adapters.calls[0].system.endsWith(`\n${bound.digest.text}`));
+  assert.deepEqual(result.kb, { name: bound.name, digest_hash: bound.digest.hash });
+  assert.deepEqual(store.readJson(dir, `shadow/${id}/draft.json`).kb, result.kb);
+});
+
+test('bound shadow derives each gate independently and shows failed gates', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  store.writeText(path.dirname(kbDir), 'demo.scrub.txt', '  ＬｕｍａＣｌｉｅｎｔ  \n', { synthetic: true });
+  const id = shadow.create(dir, { layer: 'knowledge', question: 'Which model does Cloudberry Lantern use?' });
+  for (const [text, cited, failed] of [
+    ['Unsupported fact.', [], { citation: false }],
+    ['Unknown fact. [demo.model.missing]', ['demo.model.missing'], { resolves: false }],
+    ['Draft fact. [demo.model.region]', ['demo.model.region'], { current: false }],
+    ['Disputed fact. [demo.model.retention]', ['demo.model.retention'], { current: false }],
+    ['Retired fact. [demo.model.legacy]', ['demo.model.legacy'], { current: false }],
+    ['LumaClient fact. [demo.model.provider]', ['demo.model.provider'], { scrub: false }],
+    [`${kbReply}\n${kbReply}`, ['demo.model.provider'], {}],
+    ['Not covered.\nClosest topic: model', [], {}],
+    ['Needs human.\nReason: A commitment needs review.', [], {}],
+    ['Uncited LumaClient fact.\nUnknown fact. [demo.model.missing]\nDraft fact. [demo.model.region]',
+      ['demo.model.missing', 'demo.model.region'], { citation: false, resolves: false, current: false, scrub: false }],
+  ]) {
+    const result = await shadow.draft(dir, id, { env, drafter: 'fake', hosts: kbRecording(text) });
+    assert.deepEqual(result.cited, cited, text);
+    assert.deepEqual(result.gates, { ...passingGates, ...failed }, text);
+    assert.deepEqual(store.readJson(dir, `shadow/${id}/draft.json`), result);
+    const shown = shadow.show(dir, id);
+    for (const [gate, value] of Object.entries(result.gates)) assert.ok(shown.includes(`${gate}=${value}`));
+  }
+  store.appendJsonl(kbDir, 'flags.jsonl', { id: 'demo.model.provider', flagged: true, reason: 'Synthetic review.' });
+  const result = await shadow.draft(dir, id, { env, drafter: 'fake', hosts: kbRecording() });
+  assert.deepEqual(result.gates, { ...passingGates, current: false });
+});
+
+test('unbound shadow drafts add no KB fields', async (t) => {
+  const { dir } = fixture(t);
+  const id = shadow.create(dir, { layer: 'knowledge', question: 'Synthetic question.' });
+  const adapters = recording();
+  const result = await shadow.draft(dir, id, { drafter: 'fake', hosts: adapters });
+  for (const field of ['kb', 'cited', 'gates']) {
+    assert.equal(Object.hasOwn(result, field), false);
+    assert.equal(Object.hasOwn(store.readJson(dir, `shadow/${id}/draft.json`), field), false);
+  }
+  assert.equal(adapters.calls[0].tools, 'notion-read');
+  assert.ok(!shadow.show(dir, id).includes('gates:'));
+});
+
+test('bound shadow refuses missing KBs, parse errors and unreadable scrub lists before any host call or draft write', async (t) => {
+  for (const kind of ['missing', 'parse', 'scrub']) {
+    const { dir, kbDir, env } = boundFixture(t);
+    const id = shadow.create(dir, { layer: 'knowledge', question: 'Synthetic question.' });
+    if (kind === 'missing') fs.rmSync(kbDir, { recursive: true });
+    if (kind === 'parse') store.writeText(kbDir, 'entries/model.md', '# model\n### demo.model.provider\nstatus: verified\n', { synthetic: true });
+    if (kind === 'scrub') fs.mkdirSync(`${kbDir}.scrub.txt`);
+    const adapters = kbRecording();
+    const message = kind === 'missing' ? /KB demo not found/ : kind === 'parse' ? /KB demo has parse errors: entries\/model.md:2 Missing claim\./ : /Cannot read scrub list\./;
+    await assert.rejects(shadow.draft(dir, id, { env, drafter: 'fake', hosts: adapters }), message);
+    assert.equal(adapters.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(dir, 'shadow', id, 'draft.json')), false);
+  }
+});
+
+test('bound shadow and CLI reject scrubbed verified claims before host calls or draft writes', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  const id = shadow.create(dir, { layer: 'knowledge', question: 'Which model does Cloudberry Lantern use?' });
+  const scrubWord = 'LumaClient';
+  store.writeText(path.dirname(kbDir), 'demo.scrub.txt', `${scrubWord}\n`, { synthetic: true });
+  const text = fs.readFileSync(path.join(kbDir, 'entries/model.md'), 'utf8');
+  store.writeText(kbDir, 'entries/model.md', text.replace('claim: Cloudberry', `claim: ${scrubWord} Cloudberry`), { synthetic: true });
+  const message = 'KB demo fails kb check: scrub: Entry demo.model.provider field claim contains a scrub-list match.';
+  const adapters = kbRecording();
+  await assert.rejects(shadow.draft(dir, id, { env, drafter: 'fake', hosts: adapters }), { message });
+  assert.equal(adapters.calls.length, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'shadow', id, 'draft.json')), false);
+  const result = spawnSync(process.execPath, [path.join(root, 'bin', 'bunshin.js'), 'shadow', 'draft', id,
+    '--persona', dir, '--drafter', 'fake'], { cwd: root, env: { ...process.env, ...env }, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, `${message}\n`);
+  assert.ok(!result.stderr.includes(scrubWord));
+  assert.equal(fs.existsSync(path.join(dir, 'shadow', id, 'draft.json')), false);
+});
+
+test('bound idea-discussion shadow drafter matches the unbound call and stores no KB row fields', async (t) => {
+  const { dir, env } = boundFixture(t);
+  const id = shadow.create(dir, { layer: 'judgment', question: 'Should Cloudberry Lantern try a small pilot?' });
+  const boundAdapters = kbRecording();
+  const result = await shadow.draft(dir, id, { env, drafter: 'fake:requested', hosts: boundAdapters });
+  assert.equal(result.skill, 'idea-discussion');
+  assert.equal(boundAdapters.calls[0].tools, 'notion-read');
+  assert.deepEqual(boundAdapters.calls[0].allowedTools, [
+    'mcp__claude_ai_Notion__notion-search', 'mcp__claude_ai_Notion__notion-fetch',
+  ]);
+  for (const field of ['kb', 'cited', 'gates']) {
+    assert.equal(Object.hasOwn(result, field), false);
+    assert.equal(Object.hasOwn(store.readJson(dir, `shadow/${id}/draft.json`), field), false);
+  }
+  assert.ok(!shadow.show(dir, id).includes('gates:'));
+  const { kb: binding, ...unbound } = store.readJson(dir, 'persona.json');
+  store.writeJson(dir, 'persona.json', unbound);
+  const unboundAdapters = kbRecording();
+  await shadow.draft(dir, id, { env, drafter: 'fake:requested', hosts: unboundAdapters });
+  assert.deepEqual(boundAdapters.calls[0], unboundAdapters.calls[0]);
 });
 
 test('in-process draft defaults to claude through injection; host failures redact text and write no draft', async (t) => {

@@ -36,6 +36,7 @@ The sample has no `interview-state.json` because it has no active session.
 | `synthetic` | Whether the persona contains synthetic sample data. |
 | `owner.slack_user_id` | Slack user id for the owner, or `null`. |
 | `version` | Current committed identity version. |
+| `kb` | Optional bound KB name matching `/^[a-z0-9][a-z0-9-]*$/`, for example `"demo"`. Omit it for an unbound persona. |
 | `launch_bar.send_as_is` | Required send-as-is rate. The default is `0.5`. |
 | `launch_bar.min_heldout` | Minimum held-out case count. The default is `30`. |
 | `launch_bar.min_per_layer` | Minimum cases in each layer. The default is `10`. |
@@ -380,12 +381,31 @@ Each line in `evals/<run_id>/drafts.jsonl` records a draft. The layer recorded h
 | `drafter.host` | Host that generated the draft. |
 | `drafter.model` | Recorded model name, or `null` for default. |
 | `at` | ISO timestamp of the draft. |
+| `kb` | Present only on `spec-answer` rows for a bound persona: `{name, digest_hash}`. |
+| `kb.name` | Bound knowledge base name, for example `demo`. |
+| `kb.digest_hash` | SHA-256 hex hash of the citable digest used for this draft. |
+| `cited` | Present only on `spec-answer` rows for a bound persona: unique cited entry ids in answer order. Unknown and non-citable ids are included; scrubbed ids are omitted. |
+| `gates` | Present only on `spec-answer` rows for a bound persona: four independent structural-check booleans. |
+| `gates.citation` | `false` when any sentence has a `no-citation` problem. |
+| `gates.resolves` | `false` when any sentence has an `unknown-id` problem. |
+| `gates.current` | `false` when any sentence has a `not-citable` problem (including draft, conflict, retired or flagged entries). |
+| `gates.scrub` | `false` when any sentence has a `scrub` problem against the KB's optional sibling `<name>.scrub.txt` file. |
+
+Bound personas draft `spec-answer` cases with `tools: 'none'` and no `allowedTools`. The bound KB must parse and pass `kb check` before its digest is used. The gates come from `checkSpecReply` against the loaded KB and scrub list; they do not change the judge loop or establish factual correctness. The exact abstain and hand-back forms pass the citation gates, while their details still receive the scrub check. `idea-discussion` cases on bound personas and all cases on unbound personas use `tools: 'notion-read'` with `allowedTools` and omit `kb`, `cited` and `gates`.
 
 ### Example: `drafts.jsonl`
 
 ```json
 {"case_id":"sample-10","layer":"judgment","skill":"idea-discussion","draft":"Try two search labels before widening the experiment.","drafter":{"host":"fake","model":"fake"},"at":"2026-10-20T00:00:00.000Z"}
 ```
+
+Shadow stores one draft object in `shadow/<id>/draft.json` with the same `layer`, `skill`, `draft`, `drafter`, `at` and optional `kb`/`cited`/`gates` fields, present only for bound-persona `spec-answer` drafts. It uses `format_version: 1` and `id` instead of `case_id`. When gates are present, `shadow show` prints a line after the draft, for example `gates: citation=true resolves=true current=true scrub=true`.
+
+## Run record: `run.json`
+
+`evals/<run_id>/run.json` pins the persona version, drafter and judge settings, rubric, judge examples, vote count, start time and optional limit. A new run on a bound persona also records `kb: {name, digest_hash}`, using the same KB name and SHA-256 digest hash as its `spec-answer` draft rows, even when the run selects only `idea-discussion` cases. Unbound runs omit `kb`.
+
+`eval run --run <run_id>` refuses a changed digest with `eval run: kb digest differs from run` before any host call or run-file write. Adding or removing a persona's KB binding also changes the digest comparison. `eval run --rejudge-from <run_id>` copies the source run's `kb` metadata and draft rows, including their `cited` and `gates` fields, even if the current KB has changed. It judges the saved drafts without recomposing or drafting them.
 
 ## Judgment record: `judgments.jsonl`
 

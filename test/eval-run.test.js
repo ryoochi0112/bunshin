@@ -13,6 +13,7 @@ const twin = require('../lib/twin');
 const hosts = require('../lib/hosts');
 const command = require('../lib/commands/eval');
 const examples = require('../lib/examples');
+const kb = require('../lib/kb');
 
 const root = path.join(__dirname, '..');
 const drafter = `fake:${path.join(__dirname, 'fixtures', 'hosts', 'eval-drafts.json')}`;
@@ -29,6 +30,25 @@ function fixture(t) {
   t.after(() => { fs.rmSync(dir, { recursive: true, force: true }); store._resetGuardCache(); });
   return dir;
 }
+
+function boundFixture(t) {
+  const home = fixture(t);
+  const dir = path.join(home, 'sample');
+  fs.cpSync(path.join(root, 'sample', 'persona'), dir, { recursive: true });
+  store.writeJson(dir, 'persona.json', { ...store.readJson(dir, 'persona.json'), kb: 'demo' });
+  const env = { BUNSHIN_HOME: home };
+  const kbDir = kb.resolve({ name: 'demo', env });
+  for (const file of ['kb.json', 'sources.jsonl', 'entries/model.md']) {
+    store.writeText(kbDir, file, fs.readFileSync(path.join(root, 'sample', 'kb', 'demo', file), 'utf8'), { synthetic: true });
+  }
+  return { dir, kbDir, env };
+}
+
+const kbReply = 'Cloudberry Lantern uses the fictional model Akari. [demo.model.provider]';
+const passingGates = { citation: true, resolves: true, current: true, scrub: true };
+const kbRecording = (text = kbReply) => recording((input) => ({
+  text: input.outputSchema ? JSON.stringify(valid) : text, model: 'fake-returned',
+}));
 
 function recording(fn) {
   const calls = [];
@@ -145,6 +165,197 @@ test('drafter firewall, composed system, tool boundaries, stripped judge templat
   for (const file of ['drafts', 'judgments']) for (const row of store.readJsonl(dir, `evals/${result.run_id}/${file}.jsonl`)) {
     assert.equal((row.drafter || row.judge).model, 'fake-returned');
   }
+});
+
+test('bound eval drafts use KB rules only for spec-answer and preserve idea-discussion tools and rows', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  const expectedKb = { name: 'demo', digest_hash: kb.digest(kb.load(kbDir)).hash };
+  const adapters = kbRecording();
+  const result = await evalRun.run(dir, { env, drafter: 'fake:requested', judge: 'fake:requested-judge', hosts: adapters });
+  assert.deepEqual(result, { run_id: result.run_id, drafted: 3, judged: 3, errors: 0 });
+  assert.deepEqual(store.readJson(dir, `evals/${result.run_id}/run.json`).kb, expectedKb);
+  const cases = store.readJsonl(dir, 'cases.jsonl');
+  const drafts = store.readJsonl(dir, `evals/${result.run_id}/drafts.jsonl`);
+  assert.deepEqual(drafts.map((row) => row.layer), ['judgment', 'judgment', 'knowledge']);
+  for (const [index, row] of drafts.entries()) {
+    const input = adapters.calls[index * 4];
+    const specAnswer = row.skill === 'spec-answer';
+    assert.deepEqual(Object.keys(input).sort(), specAnswer ? ['host', 'model', 'prompt', 'system', 'tools']
+      : ['allowedTools', 'host', 'model', 'prompt', 'system', 'tools']);
+    assert.equal(input.tools, specAnswer ? 'none' : 'notion-read');
+    assert.equal(Object.hasOwn(input, 'allowedTools'), !specAnswer);
+    if (!specAnswer) assert.deepEqual(input.allowedTools, hosts.allowedTools(store.readJson(dir, 'persona.json')));
+    assert.equal(input.model, 'requested');
+    assert.equal(input.system, twin.composePrompt(dir, twin.skillForLayer(row.layer), { env }));
+    assert.equal(input.prompt, judge.questionPrompt(cases[index]));
+    if (specAnswer) {
+      assert.deepEqual(row.kb, expectedKb);
+      assert.deepEqual(row.cited, ['demo.model.provider']);
+      assert.deepEqual(row.gates, passingGates);
+    } else {
+      for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(row, field), false);
+    }
+    const judgeCalls = adapters.calls.slice(index * 4 + 1, index * 4 + 4);
+    assert.equal(judgeCalls.length, judge.VOTES);
+    for (const call of judgeCalls) {
+      assert.equal(call.tools, 'none');
+      assert.equal(call.model, 'requested-judge');
+      assert.deepEqual(call.outputSchema, judge.outputSchema);
+      assert.equal(call.system, judge.composeSystem(null));
+      assert.equal(call.prompt, judge.buildPrompt(cases[index], row));
+    }
+  }
+});
+
+test('eval loads the bound KB once and shares it across prompts and digest records', async (t) => {
+  const { dir, env } = boundFixture(t);
+  const adapters = kbRecording();
+  const load = t.mock.method(kb, 'loadBound');
+  const result = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: adapters });
+  assert.equal(load.mock.calls.length, 1);
+  assert.deepEqual(load.mock.calls[0].arguments, [dir, env]);
+  const bound = load.mock.calls[0].result;
+  const expectedKb = { name: bound.name, digest_hash: bound.digest.hash };
+  assert.deepEqual(store.readJson(dir, `evals/${result.run_id}/run.json`).kb, expectedKb);
+  const drafts = store.readJsonl(dir, `evals/${result.run_id}/drafts.jsonl`);
+  const inputs = adapters.calls.filter((input) => !input.outputSchema);
+  assert.equal(inputs.length, drafts.length);
+  for (const [index, row] of drafts.entries()) {
+    if (row.layer === 'knowledge') {
+      assert.deepEqual(row.kb, expectedKb);
+      assert.match(inputs[index].system, /# Knowledge base digest\n/);
+      assert.ok(inputs[index].system.endsWith(`\n${bound.digest.text}`));
+    } else {
+      for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(row, field), false);
+    }
+  }
+  assert.ok(drafts.some((row) => row.layer === 'knowledge'));
+});
+
+test('bound eval gates fail independently from citation and scrub problems', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  store.writeJsonl(dir, 'pairs.jsonl', store.readJsonl(dir, 'pairs.jsonl')
+    .map((pair) => pair.id === 'sample-10' ? { ...pair, layer: 'knowledge' } : pair));
+  store.writeText(path.dirname(kbDir), 'demo.scrub.txt', '  ＬｕｍａＣｌｉｅｎｔ  \n', { synthetic: true });
+  const cases = [
+    ['Unsupported fact.', [], { citation: false }],
+    ['Unknown fact. [demo.model.missing]', ['demo.model.missing'], { resolves: false }],
+    ['Draft fact. [demo.model.region]', ['demo.model.region'], { current: false }],
+    ['Disputed fact. [demo.model.retention]', ['demo.model.retention'], { current: false }],
+    ['Retired fact. [demo.model.legacy]', ['demo.model.legacy'], { current: false }],
+    ['LumaClient fact. [demo.model.provider]', ['demo.model.provider'], { scrub: false }],
+    [`${kbReply}\n${kbReply}`, ['demo.model.provider'], {}],
+    ['Not covered.\nClosest topic: model', [], {}],
+    ['Needs human.\nReason: A commitment needs review.', [], {}],
+    ['Uncited LumaClient fact.\nUnknown fact. [demo.model.missing]\nDraft fact. [demo.model.region]',
+      ['demo.model.missing', 'demo.model.region'], { citation: false, resolves: false, current: false, scrub: false }],
+  ];
+  for (const [text, cited, failed] of cases) {
+    const result = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', limit: 1, hosts: kbRecording(text) });
+    const [row] = store.readJsonl(dir, `evals/${result.run_id}/drafts.jsonl`);
+    assert.deepEqual(row.cited, cited, text);
+    assert.deepEqual(row.gates, { ...passingGates, ...failed }, text);
+    assert.equal(result.judged, 1, 'failed structural gates still reach the unchanged judge loop');
+  }
+  store.appendJsonl(kbDir, 'flags.jsonl', { id: 'demo.model.provider', flagged: true, reason: 'Synthetic review.' });
+  const result = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', limit: 1, hosts: kbRecording() });
+  assert.deepEqual(store.readJsonl(dir, `evals/${result.run_id}/drafts.jsonl`)[0].gates, { ...passingGates, current: false });
+});
+
+test('bound eval resume refuses a changed digest before host calls or run writes', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  const result = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: kbRecording() });
+  const unchanged = kbRecording();
+  assert.deepEqual(await evalRun.run(dir, { env, runId: result.run_id, hosts: unchanged }),
+    { run_id: result.run_id, drafted: 0, judged: 0, errors: 0 });
+  assert.equal(unchanged.calls.length, 0);
+  const before = ['run.json', 'drafts.jsonl', 'judgments.jsonl'].map((file) => fs.readFileSync(path.join(dir, 'evals', result.run_id, file), 'utf8'));
+  const text = fs.readFileSync(path.join(kbDir, 'entries', 'model.md'), 'utf8');
+  store.writeText(kbDir, 'entries/model.md', text.replace('架空のモデル「灯り」', '架空のモデル「新灯り」'), { synthetic: true });
+  const adapters = kbRecording();
+  await assert.rejects(evalRun.run(dir, { env, runId: result.run_id, hosts: adapters }), { message: 'eval run: kb digest differs from run' });
+  assert.equal(adapters.calls.length, 0);
+  assert.deepEqual(['run.json', 'drafts.jsonl', 'judgments.jsonl'].map((file) => fs.readFileSync(path.join(dir, 'evals', result.run_id, file), 'utf8')), before);
+});
+
+test('bound rejudge copies the source digest and draft fields after the KB changes', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  const source = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: kbRecording() });
+  const sourceKb = store.readJson(dir, `evals/${source.run_id}/run.json`).kb;
+  const drafts = store.readJsonl(dir, `evals/${source.run_id}/drafts.jsonl`);
+  store.appendJsonl(kbDir, 'flags.jsonl', { id: 'demo.model.provider', flagged: true, reason: 'Synthetic review.' });
+  const adapters = kbRecording();
+  const result = await evalRun.run(dir, { env, rejudgeFrom: source.run_id, judge: 'fake:new-judge', hosts: adapters });
+  assert.deepEqual(result, { run_id: result.run_id, drafted: 0, judged: 3, errors: 0 });
+  assert.deepEqual(store.readJson(dir, `evals/${result.run_id}/run.json`).kb, sourceKb);
+  assert.deepEqual(store.readJsonl(dir, `evals/${result.run_id}/drafts.jsonl`), drafts);
+  assert.equal(adapters.calls.length, drafts.length * judge.VOTES);
+  assert.ok(adapters.calls.every((call) => call.outputSchema === judge.outputSchema && call.model === 'new-judge'));
+});
+
+test('unbound eval and rejudge add no KB fields to runs or drafts', async (t) => {
+  const dir = fixture(t);
+  const source = await evalRun.run(dir, { drafter: 'fake', judge: 'fake', hosts: recording() });
+  const rejudged = await evalRun.run(dir, { rejudgeFrom: source.run_id, judge: 'fake', hosts: recording() });
+  for (const result of [source, rejudged]) {
+    assert.equal(Object.hasOwn(store.readJson(dir, `evals/${result.run_id}/run.json`), 'kb'), false);
+    for (const row of store.readJsonl(dir, `evals/${result.run_id}/drafts.jsonl`)) {
+      for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(row, field), false);
+    }
+  }
+});
+
+test('bound eval rejects missing KBs, parse errors and unreadable scrub lists before drafting', async (t) => {
+  for (const kind of ['missing', 'parse', 'scrub']) {
+    const { dir, kbDir, env } = boundFixture(t);
+    if (kind === 'missing') fs.rmSync(kbDir, { recursive: true });
+    if (kind === 'parse') store.writeText(kbDir, 'entries/model.md', '# model\n### demo.model.provider\nstatus: verified\n', { synthetic: true });
+    if (kind === 'scrub') fs.mkdirSync(`${kbDir}.scrub.txt`);
+    const adapters = kbRecording();
+    const message = kind === 'missing' ? /KB demo not found/ : kind === 'parse' ? /KB demo has parse errors: entries\/model.md:2 Missing claim\./ : /Cannot read scrub list\./;
+    await assert.rejects(evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: adapters }), message);
+    assert.equal(adapters.calls.length, 0);
+    assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+  }
+});
+
+test('bound eval and CLI reject scrubbed verified claims before host calls or run writes', async (t) => {
+  const { dir, kbDir, env } = boundFixture(t);
+  const scrubWord = 'LumaClient';
+  store.writeText(path.dirname(kbDir), 'demo.scrub.txt', `${scrubWord}\n`, { synthetic: true });
+  const text = fs.readFileSync(path.join(kbDir, 'entries/model.md'), 'utf8');
+  store.writeText(kbDir, 'entries/model.md', text.replace('claim: Cloudberry', `claim: ${scrubWord} Cloudberry`), { synthetic: true });
+  const message = 'KB demo fails kb check: scrub: Entry demo.model.provider field claim contains a scrub-list match.';
+  const adapters = kbRecording();
+  await assert.rejects(evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: adapters }), { message });
+  assert.equal(adapters.calls.length, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+  const result = spawnSync(process.execPath, [path.join(root, 'bin', 'bunshin.js'), 'eval', 'run',
+    '--persona', dir, '--drafter', 'fake', '--judge', 'fake'], { cwd: root, env: { ...process.env, ...env }, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, `${message}\n`);
+  assert.ok(!result.stderr.includes(scrubWord));
+  assert.equal(fs.existsSync(path.join(dir, 'evals')), false);
+});
+
+test('bound idea-discussion eval drafter matches the unbound call and stores no KB row fields', async (t) => {
+  const { dir, env } = boundFixture(t);
+  const boundAdapters = kbRecording();
+  const boundRun = await evalRun.run(dir, { env, drafter: 'fake:requested', judge: 'fake', limit: 1, hosts: boundAdapters });
+  const [row] = store.readJsonl(dir, `evals/${boundRun.run_id}/drafts.jsonl`);
+  assert.equal(row.skill, 'idea-discussion');
+  assert.equal(boundAdapters.calls[0].tools, 'notion-read');
+  assert.deepEqual(boundAdapters.calls[0].allowedTools, [
+    'mcp__claude_ai_Notion__notion-search', 'mcp__claude_ai_Notion__notion-fetch',
+  ]);
+  for (const field of ['kb', 'cited', 'gates']) assert.equal(Object.hasOwn(row, field), false);
+  assert.equal(store.readJson(dir, `evals/${boundRun.run_id}/run.json`).kb.name, 'demo');
+  const { kb: binding, ...unbound } = store.readJson(dir, 'persona.json');
+  store.writeJson(dir, 'persona.json', unbound);
+  const unboundAdapters = kbRecording();
+  await evalRun.run(dir, { env, drafter: 'fake:requested', judge: 'fake', limit: 1, hosts: unboundAdapters });
+  assert.deepEqual(boundAdapters.calls[0], unboundAdapters.calls[0]);
 });
 
 test('preflight failures make no host calls and create no run directory', async (t) => {

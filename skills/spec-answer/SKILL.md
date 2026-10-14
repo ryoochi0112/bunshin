@@ -17,3 +17,4 @@ For engine commands, the plugin root is `${CLAUDE_PLUGIN_ROOT}`, or two director
 
    On a non-zero exit, show the CLI's error and stop.
 3. Treat the printed prompt as your instructions for this reply and answer the user's input exactly as that prompt says, using only search/read tools if sources are needed.
+4. If the printed prompt contains `# Knowledge base digest`, use no tools; every fact comes from that digest.
