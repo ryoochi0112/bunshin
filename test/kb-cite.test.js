@@ -10,6 +10,7 @@ const store = require('../lib/store');
 const command = require('../lib/commands/kb');
 const cite = require('../lib/kb-cite');
 const kbCheck = require('../lib/kb-check');
+const ssot = require('../lib/kb-ssot');
 const twinCheck = require('../lib/twin-check');
 
 const sample = path.resolve(__dirname, '../sample/kb/demo');
@@ -332,4 +333,42 @@ test('CLI accepts empty scrub lists and hand-backs, and fails closed on unreadab
   fs.mkdirSync(`${dir}.scrub.txt`);
   assert.equal(command.run(['cite', 'demo', '--draft', draft], io), 1);
   assert.deepEqual(output(), { stdout: '', stderr: 'Cannot read scrub list.\n' });
+});
+
+test('ssot citations resolve approved statements and distinguish existing from unknown ids', (t) => {
+  const { dir } = fixture(t);
+  store.writeJson(dir, 'kb.json', { ...kb.load(dir).manifest, digest: 'ssot' }, { synthetic: true });
+  store.writeText(dir, 'ssot.md', '# Demo SSOT\n'
+    + '## model\ntitle: Model\n### demo.model.s1\ntext: Sample model.\nbacks: demo.model.provider\n'
+    + '## stale\ntitle: Stale\n### demo.stale.s1\ntext: Old sample.\nbacks: demo.model.provider\n'
+    + '## draft\ntitle: Draft\n### demo.draft.s1\ntext: Draft sample.\nbacks: demo.model.provider\n',
+  { synthetic: true });
+  let data = kb.load(dir);
+  store.writeJsonl(dir, 'ssot-approvals.jsonl', data.ssot.sections.slice(0, 2).map((section) => ({
+    id: section.section, approved_at: '2026-10-14', text_hash: ssot.textHash(section),
+    backing_hash: section.section === 'stale' ? '0'.repeat(64) : ssot.backingHash(section, data),
+  })), { synthetic: true });
+  data = kb.load(dir);
+  assert.deepEqual(data.errors, []);
+  assert.equal(ssot.states(data).get('stale'), 'stale');
+  for (const [citedId, problems] of [
+    ['demo.model.s1', []], [id, ['not-citable']], ['demo.model.region', ['not-citable']],
+    ['demo.stale.s1', ['not-citable']], ['demo.draft.s1', ['not-citable']],
+    ['demo.missing.s1', ['unknown-id']],
+  ]) {
+    const text = `Sample fact [${citedId}].`;
+    assert.deepEqual(cite.check(data, text), {
+      ok: problems.length === 0, abstain: false, handback: false, cited: [citedId],
+      sentences: [{ text, ids: [citedId], problems, exempt: false }],
+    });
+  }
+  data.ssot.sections[0].statements[0].text += ' Edited.';
+  assert.deepEqual(cite.check(data, 'Sample fact [demo.model.s1].').sentences[0].problems, ['not-citable']);
+  data.ssot.sections[0].statements[0].text = 'Sample model.';
+  data.flags.set(id, { id, flagged: true });
+  assert.deepEqual(cite.check(data, 'Sample fact [demo.model.s1].').sentences[0].problems, ['not-citable']);
+  data.flags.clear();
+  data.manifest.digest = 'entries';
+  assert.equal(cite.check(data, `Sample fact [${id}].`).ok, true);
+  assert.deepEqual(cite.check(data, 'Sample fact [demo.model.s1].').sentences[0].problems, ['not-citable']);
 });

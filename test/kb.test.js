@@ -8,6 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 const kb = require('../lib/kb');
 const store = require('../lib/store');
+const ssot = require('../lib/kb-ssot');
 const { main } = require('../bin/bunshin');
 
 const sample = path.resolve(__dirname, '../sample/kb/demo');
@@ -275,4 +276,107 @@ test('loadBound reports the first kb check finding for a parsed KB', (t) => {
   assert.throws(() => kb.loadBound(personaDir, { BUNSHIN_HOME: home }), {
     message: 'KB demo fails kb check: source-ref: Entry demo.model.provider sources references unknown source S99.',
   });
+});
+
+test('digest mode defaults to entries and preserves the sample text and pre-change hash', () => {
+  const data = kb.load(sample);
+  const expected = {
+    text: '## model\n- [demo.model.provider] Cloudberry Lantern は架空のモデル「灯り」を利用する。\n'
+      + '  select: 利用AI=灯り; 提供元国=架空国\n',
+    hash: '6aa2e609f7b5a5bb10967907697ca9097d4f5375a7081a33046bcf8ea691c927',
+    ids: ['demo.model.provider'],
+  };
+  assert.equal(kb.mode(data), 'entries');
+  assert.deepEqual(kb.digest(data), expected);
+  data.manifest.digest = 'entries';
+  assert.equal(kb.mode(data), 'entries');
+  assert.deepEqual(kb.digest(data), expected);
+  assert.deepEqual(kb.citable(data), new Map([['demo.model.provider', {
+    id: 'demo.model.provider', claim: data.entries[0].claim, select: data.entries[0].select,
+  }]]));
+});
+
+test('invalid digest values are located load errors while both explicit modes load', (t) => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bunshin-kb-mode-')));
+  t.after(() => { store._resetGuardCache(); fs.rmSync(home, { recursive: true, force: true }); });
+  const dir = kb.resolve({ name: 'demo', env: { BUNSHIN_HOME: home } });
+  fs.cpSync(sample, dir, { recursive: true });
+  for (const digest of ['entries', 'ssot', '', 'SSOT', null, false, 0, [], {}]) {
+    store.writeJson(dir, 'kb.json', { ...manifest, digest }, { synthetic: true });
+    const data = kb.load(dir);
+    if (digest === 'entries' || digest === 'ssot') {
+      assert.deepEqual(data.errors, []);
+      assert.equal(kb.mode(data), digest);
+    } else {
+      assert.deepEqual(data.errors, [{ file: 'kb.json', line: 1,
+        message: 'Invalid digest; expected entries or ssot.' }]);
+    }
+  }
+});
+
+test('entries citable uses the digest filter for statuses, flags, duplicate and invalid ids', () => {
+  const data = kb.load(sample);
+  const provider = data.entries[0];
+  data.entries.push({ ...provider, id: 'invalid' });
+  assert.deepEqual([...kb.citable(data).keys()], [provider.id]);
+  data.entries.push({ ...provider });
+  assert.equal(kb.citable(data).size, 0);
+  data.entries.pop();
+  for (const row of [{ id: provider.id, flagged: true }, { id: provider.id }]) {
+    data.flags.set(provider.id, row);
+    assert.equal(kb.citable(data).size, 0);
+  }
+  data.flags.set(provider.id, { id: provider.id, flagged: false });
+  assert.deepEqual([...kb.citable(data).keys()], [provider.id]);
+});
+
+test('ssot digest includes approved sections in file order and changes with approval and backing edits', (t) => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bunshin-kb-digest-')));
+  t.after(() => { store._resetGuardCache(); fs.rmSync(home, { recursive: true, force: true }); });
+  const dir = kb.resolve({ name: 'demo', env: { BUNSHIN_HOME: home } });
+  fs.cpSync(sample, dir, { recursive: true });
+  const entryDigest = kb.digest(kb.load(dir));
+  store.writeText(dir, 'ssot.md', '# Demo SSOT\n\n'
+    + '## z-model\ntitle: Model\n### demo.z-model.s2\ntext: Sample model.\nbacks: demo.model.provider\n'
+    + 'select: result=a=b; 地域=北\n### demo.z-model.s1\ntext: Second sample.\nbacks: demo.model.provider\n'
+    + '## stale\ntitle: Stale\n### demo.stale.s1\ntext: Old sample.\nbacks: demo.model.provider\n'
+    + '## a-summary\ntitle: Summary\n### demo.a-summary.s1\ntext: Sample summary.\nbacks: demo.model.provider\n',
+  { synthetic: true });
+  // Drafting alone must not affect an entries-mode digest.
+  assert.deepEqual(kb.digest(kb.load(dir)), entryDigest);
+  store.writeJson(dir, 'kb.json', { ...manifest, digest: 'ssot' }, { synthetic: true });
+  let data = kb.load(dir);
+  const empty = { text: '', hash: crypto.createHash('sha256').update('').digest('hex'), ids: [] };
+  assert.deepEqual(kb.digest(data), empty);
+  const approve = (section) => store.appendJsonl(dir, 'ssot-approvals.jsonl', {
+    id: section.section, approved_at: '2026-10-14', text_hash: ssot.textHash(section),
+    backing_hash: ssot.backingHash(section, data),
+  }, { synthetic: true });
+  // Approvals are deliberately appended in reverse section order.
+  approve(data.ssot.sections[2]);
+  const firstApproval = kb.digest(kb.load(dir));
+  assert.notEqual(firstApproval.hash, empty.hash);
+  approve(data.ssot.sections[0]);
+  store.appendJsonl(dir, 'ssot-approvals.jsonl', {
+    id: 'stale', approved_at: '2026-10-14', text_hash: ssot.textHash(data.ssot.sections[1]),
+    backing_hash: '0'.repeat(64),
+  }, { synthetic: true });
+  data = kb.load(dir);
+  assert.deepEqual(data.errors, []);
+  assert.equal(ssot.states(data).get('stale'), 'stale');
+  const text = '## z-model — Model\n- [demo.z-model.s2] Sample model.\n'
+    + '  select: result=a=b; 地域=北\n- [demo.z-model.s1] Second sample.\n'
+    + '## a-summary — Summary\n- [demo.a-summary.s1] Sample summary.\n';
+  assert.deepEqual(kb.digest(data), {
+    text, hash: crypto.createHash('sha256').update(text).digest('hex'),
+    ids: ['demo.z-model.s2', 'demo.z-model.s1', 'demo.a-summary.s1'],
+  });
+  assert.notEqual(kb.digest(data).hash, firstApproval.hash);
+  assert.deepEqual(kb.citable(data), new Map(data.ssot.sections
+    .filter((section) => section.section !== 'stale')
+    .flatMap((section) => section.statements.map(({ id, text, select }) => [id, { id, claim: text, select }]))));
+  data.entries[0].claim += ' Edited.';
+  assert.deepEqual(kb.digest(data), empty);
+  assert.equal(kb.citable(data).size, 0);
+  assert.deepEqual(kb.digest({ ...data, ssot: { sections: [], approvals: new Map() } }), empty);
 });
