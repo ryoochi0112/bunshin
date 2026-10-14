@@ -86,7 +86,7 @@ See [docs/formats.md](docs/formats.md) for the plain-file persona, identity, cas
 
 ### Knowledge bases
 
-A knowledge base holds reviewed, citable product facts, kept under `$BUNSHIN_HOME/kb/<name>` and managed with `bunshin kb`. See [docs/kb-format.md](docs/kb-format.md) for the layout, entry grammar, statuses, scrub list and citation syntax. A synthetic demo is at `sample/kb/demo`. Bind a knowledge base to a persona with the optional `kb` field in `persona.json`, and spec answers then cite only its verified entries. Run `/bunshin:kb-compile` to turn one Notion page, Slack thread or pasted text into draft entries that the owner approves.
+A knowledge base holds reviewed, citable product facts, kept under `$BUNSHIN_HOME/kb/<name>` and managed with `bunshin kb`. See [docs/kb-format.md](docs/kb-format.md) for the layout, entry grammar, statuses, scrub list and citation syntax. A synthetic demo is at `sample/kb/demo`. Bind a knowledge base to a persona with `bunshin persona kb <name>` (which sets the optional `kb` field in `persona.json`), and spec answers then cite only its verified entries. `bunshin persona kb` shows the binding and `bunshin persona kb --unset` removes it. Run `/bunshin:kb-compile` to turn one Notion page, Slack thread or pasted text into draft entries that the owner approves.
 
 ## Status
 

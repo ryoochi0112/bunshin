@@ -83,7 +83,7 @@ Closest topic: model
 
 ## Binding a persona
 
-A persona uses a KB when its `persona.json` has the optional field `"kb": "demo"`. The value must match `/^[a-z0-9][a-z0-9-]*$/`; any other type or form makes the manifest invalid. Without the field the persona is unbound and its prompts and drafts are unchanged.
+A persona uses a KB when its `persona.json` has the optional field `"kb": "demo"`. The value must match `/^[a-z0-9][a-z0-9-]*$/`; any other type or form makes the manifest invalid. Without the field the persona is unbound and its prompts and drafts are unchanged. Set the field with `bunshin persona kb <name>`; it refuses a KB that is missing, has parse errors or fails `kb check`, and then leaves `persona.json` unchanged. `bunshin persona kb --unset` removes the field, and `bunshin persona kb` prints the bound name or `unbound`.
 
 For a bound persona, the `spec-answer` prompt switches to the KB template. The template tells the model to cite only the digest, so the model needs no tools. If the KB is missing, has parse errors or fails `kb check`, `twin prompt`, `shadow draft` and `eval run` exit 1 with `KB <name> not found`, `KB <name> has parse errors: <file>:<line> <message>` or `KB <name> fails kb check: <finding>: <message>`.
 
