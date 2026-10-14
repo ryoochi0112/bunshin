@@ -50,6 +50,30 @@ const kbRecording = (text = kbReply) => recording((input) => ({
   text: input.outputSchema ? JSON.stringify(valid) : text, model: 'fake-returned',
 }));
 
+test('draft shape is recorded only on bound spec-answer rows', async (t) => {
+  const { dir, env } = boundFixture(t);
+  for (const [text, shape] of [
+    [kbReply, { abstain: false, handback: false, facts: 1 }],
+    ['Not covered.\nClosest topic: model', { abstain: true, handback: false, facts: 0 }],
+    ['Needs human.\nReason: Review needed.', { abstain: false, handback: true, facts: 0 }],
+    [`${kbReply}\nNeeds human.\nReason: Review needed.`, { abstain: false, handback: true, facts: 1 }],
+  ]) {
+    const result = await evalRun.run(dir, { env, drafter: 'fake', judge: 'fake', hosts: kbRecording(text) });
+    const rows = store.readJsonl(dir, `evals/${result.run_id}/drafts.jsonl`);
+    assert.equal(rows.filter((row) => row.skill === 'spec-answer').length, 1);
+    for (const row of rows) {
+      if (row.skill === 'spec-answer') assert.deepEqual(row.shape, shape);
+      else assert.equal(Object.hasOwn(row, 'shape'), false);
+      assert.equal(Object.hasOwn(row, 'sentences'), false);
+    }
+  }
+  const unbound = fixture(t);
+  const result = await evalRun.run(unbound, { drafter: 'fake', judge: 'fake', hosts: recording() });
+  for (const row of store.readJsonl(unbound, `evals/${result.run_id}/drafts.jsonl`)) {
+    assert.equal(Object.hasOwn(row, 'shape'), false);
+  }
+});
+
 function recording(fn) {
   const calls = [];
   return { calls, get(host) { return { async run(input) {
