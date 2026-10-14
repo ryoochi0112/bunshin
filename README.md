@@ -86,7 +86,19 @@ See [docs/formats.md](docs/formats.md) for the plain-file persona, identity, cas
 
 ### Knowledge bases
 
-A knowledge base holds reviewed, citable product facts, kept under `$BUNSHIN_HOME/kb/<name>` and managed with `bunshin kb`. See [docs/kb-format.md](docs/kb-format.md) for the layout, entry grammar, statuses, scrub list and citation syntax. A synthetic demo is at `sample/kb/demo`. Bind a knowledge base to a persona with `bunshin persona kb <name>` (which sets the optional `kb` field in `persona.json`), and spec answers then cite only its verified entries. `bunshin persona kb` shows the binding and `bunshin persona kb --unset` removes it. Run `/bunshin:kb-compile` to turn one Notion page, Slack thread or pasted text into draft entries that the owner approves.
+A knowledge base holds reviewed, citable product facts, kept under `$BUNSHIN_HOME/kb/<name>` and managed with `bunshin kb`. See [docs/kb-format.md](docs/kb-format.md) for the layout, entry grammar, statuses, scrub list and citation syntax. A synthetic demo is at `sample/kb/demo`. Bind a knowledge base to a persona with `bunshin persona kb <name>` (which sets the optional `kb` field in `persona.json`), and spec answers then cite only its verified entries. `bunshin persona kb` shows the binding and `bunshin persona kb --unset` removes it. Run `/bunshin:kb-compile` to turn one Notion page, Slack thread or pasted text into draft entries that the owner approves. Run `/bunshin:kb-ssot` to restate the verified entries as a compiled SSOT (see below).
+
+### Compile an SSOT
+
+An SSOT is one reviewed document that the drafter reads and cites instead of the flat entry list. Entries stay the reviewed store, and every SSOT statement names the entries that back it. The sample knowledge base stays in `entries` mode.
+
+- Run `/bunshin:kb-ssot <kb>`. Claude drafts sections from the verified entries and saves them with `kb ssot draft`. It never approves or enables.
+- Review the sections with `kb ssot status <kb>` and `kb ssot show <kb> <section>`, and run `kb check <kb>`.
+- Approve each section you accept: `node bin/bunshin.js kb ssot approve <kb> <section>`.
+- Switch the digest: `node bin/bunshin.js kb ssot enable <kb>`. Run `kb ssot disable <kb>` to go back to entries.
+- Import the coverage labels again with `coverage import`. Enabling changes the digest hash, so `coverage.json` is `coverage_stale` until you do.
+
+See [docs/kb-format.md](docs/kb-format.md) for the file formats, section states, `kb check` findings and the one thanks line that needs no citation.
 
 ### Measuring knowledge base answers
 
