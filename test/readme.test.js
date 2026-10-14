@@ -184,7 +184,11 @@ function offlineAcceptance({ hostReply, processReply } = {}) {
     runHost: async (options) => {
       calls.push(options);
       const index = hostIndex++;
-      const fallback = index === 1 ? 'Try a small pilot. How can it be rolled back? (priority: Reversibility)'
+      const fallback = options.system.includes('# Knowledge base digest')
+        ? options.prompt.includes('Cloudberry Lantern')
+          ? 'Cloudberry Lantern は架空のモデル「灯り」を利用する。[demo.model.provider]'
+          : 'Not covered.\nClosest topic: model'
+        : index === 1 ? 'Try a small pilot. How can it be rolled back? (priority: Reversibility)'
         : index === 2 ? 'わかりません。\nSources: none' : 'I do not know.\nSources: none';
       return { text: hostReply ? await hostReply(index, fallback) : fallback, raw: cleanRaw() };
     },
@@ -207,6 +211,14 @@ function offlineAcceptance({ hostReply, processReply } = {}) {
       assert.equal(command, process.execPath);
       assert.equal(options.cwd, root);
       assert.equal(options.env.BUNSHIN_PERSONA, path.join(options.env.BUNSHIN_HOME, 'sample'));
+      if (args[1] === 'kb') {
+        assert.deepEqual(args.slice(1), ['kb', 'init', 'demo', '--sample']);
+        const setup = capture();
+        setup.env = options.env;
+        assert.equal(await require('../lib/commands/kb').run(args.slice(2), setup), 0);
+        assert.equal(setup.output.stderr, '');
+        return setup.output.stdout;
+      }
       if (args[1] === 'export') {
         const manifest = path.join(options.env.BUNSHIN_PERSONA, 'export', 'sample-v1', '.claude-plugin', 'plugin.json');
         fs.mkdirSync(path.dirname(manifest), { recursive: true });
@@ -223,15 +235,16 @@ function offlineAcceptance({ hostReply, processReply } = {}) {
   };
 }
 
-test('acceptance performs all six checks with composed prompts and cleans up', async () => {
+test('acceptance performs all seven checks with composed prompts and cleans up', async () => {
   const stub = offlineAcceptance();
   assert.equal(await acceptance.main(['--host', 'claude', '--model', 'haiku'], stub), 0);
-  assert.equal(stub.io.output.stdout, 'PASS 1 spec no-source\nPASS 2 idea priority\nPASS 3 language\nPASS 4 eval provenance\nPASS 5 export package\nPASS 6 drafter isolation\nacceptance: 6/6 passed\n');
-  assert.equal(stub.calls.length, 5);
+  assert.equal(stub.io.output.stdout, 'PASS 1 spec no-source\nPASS 2 idea priority\nPASS 3 language\nPASS 4 eval provenance\nPASS 5 export package\nPASS 6 drafter isolation\nPASS 7 kb cite\nacceptance: 7/7 passed\n');
+  assert.equal(stub.calls.length, 7);
   for (const [index, call] of stub.calls.entries()) {
-    assert.equal(call.tools, index === 1 ? 'none' : 'notion-read');
+    assert.equal(call.tools, index === 1 || index >= 5 ? 'none' : 'notion-read');
     assert.equal(call.model, 'haiku');
-    assert.deepEqual(call.allowedTools, require('../lib/hosts').allowedTools({}));
+    if (index < 5) assert.deepEqual(call.allowedTools, require('../lib/hosts').allowedTools({}));
+    else assert.equal(Object.hasOwn(call, 'allowedTools'), false);
     assert.ok(call.timeoutMs > 0 && call.timeoutMs <= 300000);
     assert.doesNotMatch(call.system, /^---\nname:/);
     assert.doesNotMatch(call.system, /\n---\nname: (?:core|spec-answer|idea-discussion)/);
@@ -246,9 +259,9 @@ test('acceptance reports every failure and cleans up after host and process erro
   });
   assert.equal(await acceptance.main(['--host', 'claude'], stub), 1);
   const lines = stub.io.output.stdout.trimEnd().split('\n');
-  assert.equal(lines.length, 7);
-  for (let i = 0; i < 6; i++) assert.match(lines[i], new RegExp(`^FAIL ${i + 1} .+: .+`));
-  assert.equal(lines[6], 'acceptance: 0/6 passed');
+  assert.equal(lines.length, 8);
+  for (let i = 0; i < 7; i++) assert.match(lines[i], new RegExp(`^FAIL ${i + 1} .+: .+`));
+  assert.equal(lines[7], 'acceptance: 0/7 passed');
   for (const home of stub.homes) assert.equal(fs.existsSync(home), false);
 });
 
@@ -273,7 +286,7 @@ test('acceptance fails individual semantic and output conditions', async () => {
     const stub = offlineAcceptance(scenario);
     assert.equal(await acceptance.main(['--host', 'claude'], stub), 1);
     assert.match(stub.io.output.stdout, new RegExp(`^FAIL ${scenario.check} `, 'm'));
-    assert.match(stub.io.output.stdout, /acceptance: 5\/6 passed\n$/);
+    assert.match(stub.io.output.stdout, /acceptance: 6\/7 passed\n$/);
     for (const home of stub.homes) assert.equal(fs.existsSync(home), false);
   }
 });

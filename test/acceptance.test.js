@@ -26,12 +26,23 @@ function stubs(raw) {
   const io = { stdout: { write: (t) => out.push(t) }, stderr: { write() {} } };
   const runHost = async (options) => {
     calls.push(options);
+    if (options.system.includes('# Knowledge base digest')) {
+      return { text: options.prompt.includes('Cloudberry Lantern')
+        ? 'Cloudberry Lantern は架空のモデル「灯り」を利用する。[demo.model.provider]'
+        : 'Not covered.\nClosest topic: model' };
+    }
     const n = calls.length - 1;
     const text = n === 1 ? 'Try a pilot. (priority: Reversibility)' : n === 2 ? 'わかりません。\nSources: none' : 'I do not know.\nSources: none';
     return { text, raw: n === 4 ? raw : clean() };
   };
   const processRun = async (command, args, options) => {
     if (command === 'claude') return 'I do not know.\nSources: none';
+    if (args[1] === 'kb') {
+      assert.deepEqual(args.slice(1), ['kb', 'init', 'demo', '--sample']);
+      const code = await require('../lib/commands/kb').run(args.slice(2), { ...io, env: options.env });
+      assert.equal(code, 0);
+      return '';
+    }
     if (args[1] === 'export') {
       const fs = require('node:fs');
       const path = require('node:path');
@@ -49,9 +60,10 @@ function stubs(raw) {
 test('checks 1 and 3 run the real drafter config; check 2 stays tool-less', async () => {
   const s = stubs(clean());
   assert.equal(await acceptance.main(['--host', 'claude'], s), 0);
-  assert.match(s.out.join(''), /acceptance: 6\/6 passed\n$/);
-  assert.deepEqual(s.calls.map((c) => c.tools), ['notion-read', 'none', 'notion-read', 'notion-read', 'notion-read']);
-  for (const c of s.calls) assert.deepEqual(c.allowedTools, allow);
+  assert.match(s.out.join(''), /acceptance: 7\/7 passed\n$/);
+  assert.deepEqual(s.calls.map((c) => c.tools), ['notion-read', 'none', 'notion-read', 'notion-read', 'notion-read', 'none', 'none']);
+  for (const c of s.calls.slice(0, 5)) assert.deepEqual(c.allowedTools, allow);
+  for (const c of s.calls.slice(5)) assert.equal(Object.hasOwn(c, 'allowedTools'), false);
 });
 
 test('check 6 passes on a clean raw and fails (alone) on each bad raw', async () => {
@@ -65,7 +77,65 @@ test('check 6 passes on a clean raw and fails (alone) on each bad raw', async ()
     const s = stubs(raw);
     assert.equal(await acceptance.main(['--host', 'claude'], s), 1, name);
     assert.match(s.out.join(''), /^FAIL 6 drafter isolation: /m, name);
-    assert.match(s.out.join(''), /acceptance: 5\/6 passed\n$/, name);
+    assert.match(s.out.join(''), /acceptance: 6\/7 passed\n$/, name);
+  }
+});
+
+test('kb cite composes a bound synthetic persona and asks two questions without tools', async () => {
+  const s = stubs(clean());
+  const processRun = s.processRun;
+  let home;
+  s.processRun = async (command, args, options) => {
+    home = options.env.BUNSHIN_HOME;
+    return processRun(command, args, options);
+  };
+  const runHost = s.runHost;
+  s.runHost = async (options) => {
+    if (options.system.includes('# Knowledge base digest')) {
+      const dir = path.join(home, 'sample');
+      assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'persona.json'))).kb, 'demo');
+      assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'persona.json'))).synthetic, true);
+      assert.equal(options.system, require('../lib/twin').compose(dir, 'spec-answer', {
+        env: { BUNSHIN_HOME: home },
+      }).text);
+      assert.match(options.system, /\[demo\.model\.provider\] Cloudberry Lantern/);
+      assert.equal(options.tools, 'none');
+      assert.equal(Object.hasOwn(options, 'allowedTools'), false);
+    }
+    return runHost(options);
+  };
+  assert.equal(await acceptance.main(['--host', 'claude', '--model', 'synthetic-model'], s), 0);
+  assert.match(s.out.join(''), /^PASS 7 kb cite$/m);
+  const calls = s.calls.filter(c => c.system.includes('# Knowledge base digest'));
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].prompt, /Cloudberry Lantern/);
+  assert.match(calls[1].prompt, /weather/i);
+  for (const c of calls) {
+    assert.equal(c.model, 'synthetic-model');
+    assert.ok(c.timeoutMs > 0 && c.timeoutMs <= 300000);
+  }
+  assert.equal(fs.existsSync(home), false);
+});
+
+test('kb cite rejects missing or wrong citations and a non-abstaining unrelated answer', async () => {
+  for (const [question, text] of [
+    [0, 'Cloudberry Lantern uses a fictional model.'],
+    [0, 'Cloudberry Lantern uses a fictional model.[demo.model.unknown]'],
+    [0, 'Not covered.\nClosest topic: model'],
+    [1, 'The weather is sunny.[demo.model.provider]'],
+    [1, 'Not covered.'],
+  ]) {
+    const s = stubs(clean());
+    const runHost = s.runHost;
+    let count = 0;
+    s.runHost = async (options) => {
+      const reply = await runHost(options);
+      if (options.system.includes('# Knowledge base digest') && count++ === question) reply.text = text;
+      return reply;
+    };
+    assert.equal(await acceptance.main(['--host', 'claude'], s), 1, text);
+    assert.match(s.out.join(''), /^FAIL 7 kb cite: /m, text);
+    assert.match(s.out.join(''), /acceptance: 6\/7 passed\n$/, text);
   }
 });
 
