@@ -8,6 +8,8 @@ const path = require('node:path');
 const test = require('node:test');
 const kb = require('../lib/kb');
 const kbCheck = require('../lib/kb-check');
+const ssot = require('../lib/kb-ssot');
+const command = require('../lib/commands/kb');
 const guard = require('../lib/guard');
 const { normalize } = require('../lib/leak');
 const store = require('../lib/store');
@@ -466,3 +468,200 @@ for (const text of piiTable.phones) {
     assert.ok(kbCheck.run(dir).findings.some((item) => item.name === 'pii'));
   });
 }
+
+const ssotText = '# Demo SSOT\n\n## model\ntitle: Model\n\n### demo.model.s1\ntext: Cloudberry Lantern uses a fictional model.\nbacks: demo.model.provider\n';
+
+function ssotFixture(t, text = ssotText) {
+  const home = temporaryDirectory(t);
+  const env = { BUNSHIN_HOME: home };
+  const dir = kb.resolve({ name: 'demo', env });
+  fs.cpSync(sample, dir, { recursive: true });
+  if (text !== null) store.writeText(dir, 'ssot.md', text, writeOptions);
+  return { dir, env };
+}
+
+function ssotApproval(dir) {
+  const data = kb.load(dir);
+  const section = data.ssot.sections[0];
+  return { id: section.section, approved_at: '2026-10-14T00:00:00Z',
+    text_hash: ssot.textHash(section), backing_hash: ssot.backingHash(section, data) };
+}
+
+test('sample KB check command output stays unchanged without ssot.md', (t) => {
+  const { env } = ssotFixture(t, null);
+  let stdout = '';
+  let stderr = '';
+  const code = command.run(['check', 'demo'], { env,
+    stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } },
+  });
+  assert.deepEqual({ code, stdout, stderr }, { code: 0, stdout: 'KB check passed.\n', stderr: '' });
+});
+
+for (const [label, text, line] of [
+  ['missing text', ssotText.replace('text: Cloudberry Lantern uses a fictional model.\n', ''), 6],
+  ['unknown key', ssotText + 'extra: sample\n', 9],
+  ['duplicate select key', ssotText + 'select: contact@example.invalid=a; contact@example.invalid=b\n', 9],
+]) {
+  test(`SSOT ${label} reports a private ssot-parse finding`, (t) => {
+    const { dir } = ssotFixture(t, text);
+    const [item] = finding(kbCheck.run(dir), 'ssot-parse', 'contact@example.invalid');
+    assert.equal(item.file, 'ssot.md');
+    assert.equal(item.line, line);
+  });
+}
+
+test('SSOT backs must reference existing entries and broken references refuse binding', (t) => {
+  const { dir, env } = ssotFixture(t, ssotText.replace('backs: demo.model.provider', 'backs: demo.model.provider, demo.model.missing'));
+  const [item] = finding(kbCheck.run(dir), 'ssot-backs');
+  assert.equal(item.file, 'ssot.md');
+  assert.equal(item.line, 6);
+  assert.throws(() => kb.loadBindable('demo', env), /fails kb check: ssot-backs:/);
+});
+
+test('SSOT draft sections may back entries of every status in entries mode', (t) => {
+  const { dir } = ssotFixture(t, ssotText.replace('backs: demo.model.provider',
+    'backs: demo.model.provider, demo.model.region, demo.model.retention, demo.model.legacy'));
+  assert.deepEqual(kbCheck.run(dir), { ok: true, findings: [] });
+});
+
+for (const [field, text, privateText] of [
+  ['document title', ssotText.replace('# Demo SSOT', '# demo@example.invalid'), 'demo@example.invalid'],
+  ['document title', ssotText.replace('# Demo SSOT', '# ０９０－１２３４－５６７８'), '090-1234-5678'],
+  ['text', ssotText.replace('Cloudberry Lantern uses a fictional model.', 'ｄｅｍｏ＠ｅｘａｍｐｌｅ．ｉｎｖａｌｉｄ'), 'demo@example.invalid'],
+  ['text', ssotText.replace('Cloudberry Lantern uses a fictional model.', '０９０－１２３４－５６７８'), '090-1234-5678'],
+  ['title', ssotText.replace('title: Model', 'title: demo@example.invalid'), 'demo@example.invalid'],
+  ['title', ssotText.replace('title: Model', 'title: +81 (90) 1234-5678'), '+81 (90) 1234-5678'],
+  ['select', ssotText + 'select: contact=demo@example.invalid\n', 'demo@example.invalid'],
+  ['select', ssotText + 'select: demo@example.invalid=contact\n', 'demo@example.invalid'],
+  ['select', ssotText + 'select: contact=03-1234-5678\n', '03-1234-5678'],
+]) {
+  test(`SSOT PII in ${field} produces ssot-pii without echoing the value`, (t) => {
+    const { dir } = ssotFixture(t, text);
+    const [item] = finding(kbCheck.run(dir), 'ssot-pii', privateText);
+    assert.equal(item.file, 'ssot.md');
+    assert.match(item.message, new RegExp(`\\b${field}\\b`));
+    assert.ok(!JSON.stringify(item).includes('Cloudberry Lantern'));
+  });
+}
+
+for (const [field, text, line] of [
+  ['document title', ssotText.replace('# Demo SSOT', '# ＬＵＭＡＣＬＩＥＮＴ'), 1],
+  ['title', ssotText.replace('title: Model', 'title: lUmAcLiEnT'), 3],
+  ['text', ssotText.replace('Cloudberry Lantern uses a fictional model.', 'ＬＵＭＡＣＬＩＥＮＴ uses a fictional model.'), 6],
+  ['select', ssotText + 'select: ＬＵＭＡＣＬＩＥＮＴ=demo\n', 6],
+  ['select', ssotText + 'select: model=lUmAcLiEnT\n', 6],
+]) {
+  test(`SSOT scrub scan covers ${field} without echoing the value and refuses binding`, (t) => {
+    const { dir, env } = ssotFixture(t, text);
+    scrub(dir, '\n　\n  LumaClient \r\nLuma\nLumaClient\n');
+    const items = finding(kbCheck.run(dir), 'ssot-scrub');
+    assert.equal(items.length, 1);
+    assert.equal(items[0].file, 'ssot.md');
+    assert.equal(items[0].line, line);
+    assert.match(items[0].message, new RegExp(`\\b${field}\\b`));
+    assert.throws(() => kb.loadBindable('demo', env), /fails kb check: ssot-scrub:/);
+  });
+}
+
+test('SSOT scrub scan uses an explicitly supplied scrub file', (t) => {
+  const { dir } = ssotFixture(t, ssotText.replace('title: Model', 'title: LumaClient'));
+  const scrubFile = path.join(path.dirname(dir), 'scrub-list.txt');
+  store.writeText(path.dirname(dir), 'scrub-list.txt', 'LumaClient\n', writeOptions);
+  const [item] = finding(kbCheck.run(dir, { scrubFile }), 'ssot-scrub');
+  assert.equal(item.file, 'ssot.md');
+  assert.equal(item.line, 3);
+});
+
+test('SSOT PII scan keeps the existing source-ref and date exclusions', (t) => {
+  const { dir } = ssotFixture(t, ssotText.replace('title: Model', 'title: 2026-10-14')
+    + 'select: source=S01#E11; reviewed=2026-10-14\n');
+  assert.deepEqual(kbCheck.run(dir), { ok: true, findings: [] });
+});
+
+for (const slug of ['s1', 's12', 's0', 's01', 's1-extra']) {
+  test(`entry slug ${slug} is reserved only when it matches the SSOT statement pattern`, (t) => {
+    const { dir } = ssotFixture(t, ssotText.replace('demo.model.provider', `demo.model.${slug}`));
+    const text = fs.readFileSync(path.join(dir, 'entries/model.md'), 'utf8');
+    store.writeText(dir, 'entries/model.md', text.replace('demo.model.provider', `demo.model.${slug}`), writeOptions);
+    const result = kbCheck.run(dir);
+    if (slug === 's1' || slug === 's12') {
+      const [item] = finding(result, 'ssot-entry-slug');
+      assert.equal(item.file, 'entries/model.md');
+      assert.equal(item.line, 3);
+    } else assert.deepEqual(result, { ok: true, findings: [] });
+  });
+}
+
+for (const state of ['missing file', 'absent', 'draft', 'changed', 'stale', 'blocked']) {
+  test(`SSOT digest with ${state} sections reports ssot-empty and refuses binding`, (t) => {
+    const { dir, env } = ssotFixture(t, state === 'missing file' ? null : state === 'absent' ? '# Demo SSOT\n' : ssotText);
+    if (state !== 'missing file' && state !== 'absent' && state !== 'draft') {
+      store.writeJsonl(dir, 'ssot-approvals.jsonl', [ssotApproval(dir)], writeOptions);
+      if (state === 'changed') store.writeText(dir, 'ssot.md', ssotText.replace('title: Model', 'title: Revised model'), writeOptions);
+      else if (state === 'stale') {
+        const text = fs.readFileSync(path.join(dir, 'entries/model.md'), 'utf8');
+        store.writeText(dir, 'entries/model.md', text.replace('「灯り」', '「小灯り」'), writeOptions);
+      } else store.writeJsonl(dir, 'flags.jsonl', [{ id: 'demo.model.provider', flagged: true }], writeOptions);
+    }
+    store.writeJson(dir, 'kb.json', { ...store.readJson(dir, 'kb.json'), digest: 'ssot' }, writeOptions);
+    const [item] = finding(kbCheck.run(dir), 'ssot-empty');
+    assert.equal(item.file, 'kb.json');
+    assert.throws(() => kb.loadBindable('demo', env), /fails kb check: ssot-empty:/);
+  });
+}
+
+test('one approved SSOT section is enough even with another draft section', (t) => {
+  const { dir, env } = ssotFixture(t, ssotText + '\n## next\ntitle: Next\n### demo.next.s1\ntext: Sample model.\nbacks: demo.model.provider\n');
+  store.writeJsonl(dir, 'ssot-approvals.jsonl', [ssotApproval(dir)], writeOptions);
+  store.writeJson(dir, 'kb.json', { ...store.readJson(dir, 'kb.json'), digest: 'ssot' }, writeOptions);
+  assert.deepEqual(kbCheck.run(dir), { ok: true, findings: [] });
+  assert.equal(kb.loadBindable('demo', env).data.ssot.present, true);
+});
+
+for (const [label, change] of [
+  ['null', () => null], ['array', () => []], ['string', () => 'sample'],
+  ['missing id', (row) => ({ ...row, id: undefined })],
+  ['non-string id', (row) => ({ ...row, id: 1 })],
+  ['missing approved_at', (row) => ({ ...row, approved_at: undefined })],
+  ['non-string approved_at', (row) => ({ ...row, approved_at: 1 })],
+  ...['text_hash', 'backing_hash'].flatMap((field) => [
+    [`missing ${field}`, (row) => ({ ...row, [field]: undefined })],
+    [`non-string ${field}`, (row) => ({ ...row, [field]: 1 })],
+    [`short ${field}`, (row) => ({ ...row, [field]: 'a'.repeat(63) })],
+    [`long ${field}`, (row) => ({ ...row, [field]: 'a'.repeat(65) })],
+    [`non-hex ${field}`, (row) => ({ ...row, [field]: 'g'.repeat(64) })],
+  ]),
+]) {
+  test(`SSOT approval ${label} reports ssot-approvals even when overwritten`, (t) => {
+    const { dir } = ssotFixture(t);
+    const approval = ssotApproval(dir);
+    store.writeJsonl(dir, 'ssot-approvals.jsonl', [change(approval), approval], writeOptions);
+    const [item] = finding(kbCheck.run(dir), 'ssot-approvals');
+    assert.equal(item.file, 'ssot-approvals.jsonl');
+    assert.equal(item.line, 1);
+    assert.equal(kbCheck.run(dir).findings.filter((item) => item.name === 'ssot-approvals' && item.line === 1).length, 1);
+  });
+}
+
+test('malformed SSOT approval JSON reports ssot-approvals at its registry line', (t) => {
+  const { dir } = ssotFixture(t);
+  store.writeText(dir, 'ssot-approvals.jsonl', '\n{broken\n', writeOptions);
+  const [item] = finding(kbCheck.run(dir), 'ssot-approvals');
+  assert.equal(item.file, 'ssot-approvals.jsonl');
+  assert.equal(item.line, 2);
+});
+
+test('SSOT approval hashes allow uppercase hex and blank registry lines', (t) => {
+  const { dir } = ssotFixture(t);
+  const row = { ...ssotApproval(dir), text_hash: 'A'.repeat(64), backing_hash: 'F'.repeat(64) };
+  store.writeText(dir, 'ssot-approvals.jsonl', `\n${JSON.stringify(row)}\n\n`, writeOptions);
+  assert.deepEqual(kbCheck.run(dir), { ok: true, findings: [] });
+});
+
+test('without ssot.md no SSOT findings apply to entry slugs or approvals in entries mode', (t) => {
+  const { dir } = ssotFixture(t, null);
+  const text = fs.readFileSync(path.join(dir, 'entries/model.md'), 'utf8');
+  store.writeText(dir, 'entries/model.md', text.replace('demo.model.provider', 'demo.model.s1'), writeOptions);
+  store.writeJsonl(dir, 'ssot-approvals.jsonl', [{ id: 'model' }], writeOptions);
+  assert.deepEqual(kbCheck.run(dir), { ok: true, findings: [] });
+});
